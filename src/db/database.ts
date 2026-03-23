@@ -3,17 +3,25 @@ import * as SQLite from 'expo-sqlite';
 const DB_NAME = 'control_stock.db';
 
 let _db: SQLite.SQLiteDatabase | null = null;
+let _dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 /**
  * Returns the singleton database instance.
  * Opens or creates the database on first call.
  */
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
-  if (!_db) {
-    _db = await SQLite.openDatabaseAsync(DB_NAME);
+  if (_db) return _db;
+  
+  if (!_dbPromise) {
+    _dbPromise = SQLite.openDatabaseAsync(DB_NAME).then(db => {
+      _db = db;
+      return db;
+    });
   }
-  return _db;
+  
+  return _dbPromise;
 }
+
 
 /**
  * Creates tables and indexes if they don't already exist.
@@ -23,8 +31,6 @@ export async function initializeDatabase(): Promise<void> {
   const db = await getDatabase();
 
   await db.execAsync(`
-    PRAGMA journal_mode = WAL;
-
     CREATE TABLE IF NOT EXISTS master_stock (
       id_barra    TEXT PRIMARY KEY,
       cod_articulo TEXT NOT NULL,

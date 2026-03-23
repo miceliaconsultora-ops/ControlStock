@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Códigos de Barras — Control Stock Textil</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #f1f5f9;
+      padding: 20px;
+    }
+    
+    h1 {
+      text-align: center;
+      color: #0f172a;
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+    
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    
+    .instructions {
+      text-align: center;
+      background: #dbeafe;
+      border: 1px solid #93c5fd;
+      border-radius: 8px;
+      padding: 12px 20px;
+      margin-bottom: 24px;
+      color: #1e40af;
+      font-size: 13px;
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    
+    .print-btn {
+      display: block;
+      margin: 0 auto 24px;
+      padding: 12px 32px;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .print-btn:hover {
+      background: #2563eb;
+    }
+    
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    
+    .barcode-card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      transition: box-shadow 0.2s;
+      break-inside: avoid;
+    }
+    
+    .barcode-card:hover {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    
+    .article-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #3b82f6;
+      background: #eff6ff;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-bottom: 6px;
+    }
+    
+    .article-desc {
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 4px;
+    }
+    
+    .barcode-card svg {
+      width: 100%;
+      max-width: 220px;
+      height: auto;
+    }
+    
+    @media print {
+      body {
+        background: white;
+        padding: 10px;
+      }
+      
+      .print-btn, .instructions, h1, .subtitle {
+        display: none;
+      }
+      
+      .grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+      }
+      
+      .barcode-card {
+        border: 1px solid #ccc;
+        box-shadow: none;
+        padding: 8px;
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🏷️ Códigos de Barras — Artículos Textiles</h1>
+  <p class="subtitle">Control Stock · Datos Mock · 26 rollos</p>
+  
+  <div class="instructions">
+    📷 <strong>Para probar con la cámara:</strong> Abrí esta página en el navegador, 
+    mostrá un código de barras a la cámara de la computadora o celular y escanealo con la app.
+    <br>También podés imprimir esta página con el botón de abajo.
+  </div>
+  
+  <button class="print-btn" onclick="window.print()">🖨️ Imprimir Códigos</button>
+
+  <div class="grid" id="barcode-grid"></div>
+
+  <script>
+    // All articles from mock_articles.csv
+    const articles = [
+      { id_barra: "7790001000011", cod_articulo: "ALG-BLA", descripcion: "Algodón", peso: 12.5, color: "Blanco" },
+      { id_barra: "7790001000028", cod_articulo: "ALG-BLA", descripcion: "Algodón", peso: 11.8, color: "Blanco" },
+      { id_barra: "7790001000035", cod_articulo: "ALG-BLA", descripcion: "Algodón", peso: 13.2, color: "Blanco" },
+      { id_barra: "7790001000042", cod_articulo: "ALG-NEG", descripcion: "Algodón", peso: 10.0, color: "Negro" },
+      { id_barra: "7790001000059", cod_articulo: "ALG-NEG", descripcion: "Algodón", peso: 12.0, color: "Negro" },
+      { id_barra: "7790001000066", cod_articulo: "ALG-ROJ", descripcion: "Algodón", peso: 14.5, color: "Rojo" },
+      { id_barra: "7790001000073", cod_articulo: "ALG-ROJ", descripcion: "Algodón", peso: 13.8, color: "Rojo" },
+      { id_barra: "7790001000080", cod_articulo: "ALG-AZU", descripcion: "Algodón", peso: 11.0, color: "Azul" },
+      { id_barra: "7790001000097", cod_articulo: "POL-BLA", descripcion: "Poliéster", peso: 8.5, color: "Blanco" },
+      { id_barra: "7790001000103", cod_articulo: "POL-BLA", descripcion: "Poliéster", peso: 9.2, color: "Blanco" },
+      { id_barra: "7790001000110", cod_articulo: "POL-BLA", descripcion: "Poliéster", peso: 8.0, color: "Blanco" },
+      { id_barra: "7790001000127", cod_articulo: "POL-NEG", descripcion: "Poliéster", peso: 7.5, color: "Negro" },
+      { id_barra: "7790001000134", cod_articulo: "POL-NEG", descripcion: "Poliéster", peso: 8.8, color: "Negro" },
+      { id_barra: "7790001000141", cod_articulo: "POL-ROJ", descripcion: "Poliéster", peso: 9.0, color: "Rojo" },
+      { id_barra: "7790001000158", cod_articulo: "LIN-BLA", descripcion: "Lino", peso: 6.5, color: "Blanco" },
+      { id_barra: "7790001000165", cod_articulo: "LIN-BLA", descripcion: "Lino", peso: 7.0, color: "Blanco" },
+      { id_barra: "7790001000172", cod_articulo: "LIN-CRU", descripcion: "Lino", peso: 6.8, color: "Crudo" },
+      { id_barra: "7790001000189", cod_articulo: "LIN-CRU", descripcion: "Lino", peso: 7.2, color: "Crudo" },
+      { id_barra: "7790001000196", cod_articulo: "SED-NEG", descripcion: "Seda", peso: 3.5, color: "Negro" },
+      { id_barra: "7790001000202", cod_articulo: "SED-ROJ", descripcion: "Seda", peso: 3.2, color: "Rojo" },
+      { id_barra: "7790001000219", cod_articulo: "DEN-AZU", descripcion: "Denim", peso: 15.0, color: "Azul" },
+      { id_barra: "7790001000226", cod_articulo: "DEN-AZU", descripcion: "Denim", peso: 14.5, color: "Azul" },
+      { id_barra: "7790001000233", cod_articulo: "DEN-AZU", descripcion: "Denim", peso: 16.0, color: "Azul" },
+      { id_barra: "7790001000240", cod_articulo: "DEN-NEG", descripcion: "Denim", peso: 14.0, color: "Negro" },
+      { id_barra: "7790001000257", cod_articulo: "GAB-BEI", descripcion: "Gabardina", peso: 10.5, color: "Beige" },
+    ];
+
+    const grid = document.getElementById('barcode-grid');
+
+    articles.forEach((art, i) => {
+      const card = document.createElement('div');
+      card.className = 'barcode-card';
+      
+      card.innerHTML = `
+        <div class="article-label">${art.cod_articulo}</div>
+        <div class="article-desc">${art.descripcion} · ${art.color} · ${art.peso}kg</div>
+        <svg id="barcode-${i}"></svg>
+      `;
+      
+      grid.appendChild(card);
+      
+      // Generate real scannable EAN-13 barcode
+      try {
+        JsBarcode(`#barcode-${i}`, art.id_barra, {
+          format: "EAN13",
+          width: 2,
+          height: 60,
+          fontSize: 14,
+          margin: 4,
+          displayValue: true,
+          font: "Inter, sans-serif",
+          textMargin: 4,
+        });
+      } catch(e) {
+        // If EAN-13 fails (invalid checksum), use CODE128
+        JsBarcode(`#barcode-${i}`, art.id_barra, {
+          format: "CODE128",
+          width: 1.8,
+          height: 60,
+          fontSize: 12,
+          margin: 4,
+          displayValue: true,
+          font: "Inter, sans-serif",
+          textMargin: 4,
+        });
+      }
+    });
+  </script>
+
+</body>
+</html>

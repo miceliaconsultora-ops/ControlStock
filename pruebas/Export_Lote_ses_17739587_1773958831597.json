@@ -1,0 +1,91 @@
+{
+  "header": {
+    "device_id": "DEVICE_001",
+    "user": "Operario",
+    "session_id": "ses_1773958766075_ukp308",
+    "timestamp": "2026-03-19T22:20:31.597Z"
+  },
+  "summary": [
+    {
+      "cod_articulo": "SIN_CODIGO",
+      "descripcion": "Artículo Desconocido",
+      "color": "-",
+      "total_units": 7,
+      "total_weight": 0,
+      "rollos": [
+        {
+          "id_barra": "3:0;0000",
+          "peso": 0
+        },
+        {
+          "id_barra": "7190007000134",
+          "peso": 0
+        },
+        {
+          "id_barra": "3158871821112",
+          "peso": 0
+        },
+        {
+          "id_barra": "6796001000128",
+          "peso": 0
+        },
+        {
+          "id_barra": "6213815821171",
+          "peso": 0
+        },
+        {
+          "id_barra": "7790001010001",
+          "peso": 0
+        },
+        {
+          "id_barra": "6533652000141",
+          "peso": 0
+        }
+      ]
+    }
+  ],
+  "raw_data": [
+    {
+      "id_barra": "3:0;0000",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    },
+    {
+      "id_barra": "7190007000134",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    },
+    {
+      "id_barra": "3158871821112",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    },
+    {
+      "id_barra": "6796001000128",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    },
+    {
+      "id_barra": "6213815821171",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    },
+    {
+      "id_barra": "7790001010001",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    },
+    {
+      "id_barra": "6533652000141",
+      "cod_articulo": "",
+      "peso": 0,
+      "color": ""
+    }
+  ]
+}

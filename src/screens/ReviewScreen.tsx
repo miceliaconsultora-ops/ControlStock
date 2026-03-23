@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   SafeAreaView,
+  Platform,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -47,42 +48,70 @@ export default function ReviewScreen({ route, navigation }: Props) {
   };
 
   const handleFinalize = () => {
+    console.log('[Review] handleFinalize called. totalUnits:', totals.totalUnits);
+    
     if (totals.totalUnits === 0) {
-      Alert.alert('Sin Datos', 'No hay escaneos en esta sesión para exportar.');
+      if (Platform.OS === 'web') {
+        alert('No hay escaneos en esta sesión para exportar.');
+      } else {
+        Alert.alert('Sin Datos', 'No hay escaneos en esta sesión para exportar.');
+      }
       return;
     }
 
-    Alert.alert(
-      'Finalizar Sesión',
-      `¿Confirmas el envío del lote?\n\n• ${totals.totalUnits} unidades\n• ${totals.totalWeight.toFixed(2)} kg total`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Exportar y Enviar',
-          style: 'destructive',
-          onPress: performExport,
-        },
-      ]
-    );
+    if (Platform.OS === 'web') {
+      // On web, run export directly — window.confirm can be unreliable
+      console.log('[Review] Web mode — exporting directly...');
+      performExport();
+    } else {
+      const message = `¿Confirmas el envío del lote?\n\n• ${totals.totalUnits} rollos\n• ${totals.totalWeight.toFixed(2)} kg total\n• ${aggregated.length} artículos distintos`;
+      Alert.alert(
+        'Finalizar Sesión',
+        message,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'Exportar y Enviar',
+            style: 'destructive',
+            onPress: performExport,
+          },
+        ]
+      );
+    }
   };
 
   const performExport = async () => {
     try {
       setIsExporting(true);
-      const success = await exportAndShare(sessionId, 'DEVICE_001', 'Operario');
+      console.log('[Review] performExport starting for session:', sessionId);
+      
+      const { getOperatorName } = await import('../services/operatorService');
+      const opName = await getOperatorName() || 'Desconocido';
+      
+      const success = await exportAndShare(sessionId, 'DEVICE_001', opName);
+      console.log('[Review] exportAndShare returned:', success);
       if (success) {
+        console.log('[Review] Purging session...');
         await purgeSession(sessionId);
-        Alert.alert('✅ Éxito', 'El lote fue exportado correctamente. La sesión ha sido limpiada.', [
-          { text: 'Volver al Inicio', onPress: () => navigation.popToTop() },
-        ]);
+        console.log('[Review] Session purged. Navigating back...');
+
+        if (Platform.OS === 'web') {
+          // Don't use alert() here — it can block. Just navigate.
+          navigation.popToTop();
+        } else {
+          Alert.alert('✅ Éxito', 'El lote fue exportado correctamente. La sesión ha sido limpiada.', [
+            { text: 'Volver al Inicio', onPress: () => navigation.popToTop() },
+          ]);
+        }
       }
     } catch (err: any) {
-      // If user cancelled the share sheet, don't purge
-      console.warn('Export cancelled or failed:', err.message);
-      Alert.alert(
-        'Exportación Cancelada',
-        'La sesión NO fue eliminada. Podés intentar nuevamente.'
-      );
+      console.error('[Review] Export error:', err);
+      const msg = 'La sesión NO fue eliminada. Podés intentar nuevamente.';
+      if (Platform.OS === 'web') {
+        alert(`Exportación Cancelada: ${msg}\n\nError: ${err?.message || err}`);
+      } else {
+        Alert.alert('Exportación Cancelada', msg);
+      }
     } finally {
       setIsExporting(false);
     }
@@ -104,7 +133,7 @@ export default function ReviewScreen({ route, navigation }: Props) {
       {/* Totals Header */}
       <View style={styles.totalsHeader}>
         <View style={styles.totalCard}>
-          <Text style={styles.totalLabel}>Unidades</Text>
+          <Text style={styles.totalLabel}>Rollos</Text>
           <Text style={styles.totalValue}>{totals.totalUnits}</Text>
         </View>
         <View style={styles.totalDivider} />
@@ -124,7 +153,7 @@ export default function ReviewScreen({ route, navigation }: Props) {
         </Text>
       </View>
 
-      {/* Aggregated List */}
+      {/* Aggregated List — grouped by cod_articulo (tela + color) */}
       <FlatList
         data={aggregated}
         keyExtractor={(item) => item.cod_articulo}
@@ -133,24 +162,21 @@ export default function ReviewScreen({ route, navigation }: Props) {
           <View style={styles.articleCard}>
             <View style={styles.articleHeader}>
               <Text style={styles.articleCode}>{item.cod_articulo}</Text>
-              <View
-                style={[
-                  styles.colorDot,
-                  { backgroundColor: item.color || '#6B7280' },
-                ]}
-              />
+              <View style={styles.colorTag}>
+                <Text style={styles.colorTagText}>{item.color}</Text>
+              </View>
             </View>
             <Text style={styles.articleDesc} numberOfLines={1}>
-              {item.descripcion}
+              {item.descripcion} — {item.color}
             </Text>
             <View style={styles.articleStats}>
               <View style={styles.statPill}>
-                <Text style={styles.statLabel}>Unidades</Text>
+                <Text style={styles.statLabel}>Rollos</Text>
                 <Text style={styles.statValue}>{item.total_units}</Text>
               </View>
-              <View style={styles.statPill}>
-                <Text style={styles.statLabel}>Peso</Text>
-                <Text style={styles.statValue}>{item.total_weight.toFixed(2)} kg</Text>
+              <View style={[styles.statPill, styles.statPillHighlight]}>
+                <Text style={styles.statLabel}>Kg Total</Text>
+                <Text style={styles.statValueBig}>{item.total_weight.toFixed(2)}</Text>
               </View>
             </View>
           </View>
@@ -168,7 +194,7 @@ export default function ReviewScreen({ route, navigation }: Props) {
           {isExporting ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.finalizeButtonText}>📤 Finalizar y Exportar Lote</Text>
+            <Text style={styles.finalizeButtonText}>📤 Finalizar y Exportar Lote (JSON)</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -262,13 +288,18 @@ const styles = StyleSheet.create({
     color: '#E2E8F0',
     fontSize: 16,
     fontWeight: '700',
+    fontFamily: Platform.OS === 'web' ? 'monospace' : 'Courier',
   },
-  colorDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: '#475569',
+  colorTag: {
+    backgroundColor: '#334155',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  colorTagText: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    fontWeight: '600',
   },
   articleDesc: {
     color: '#94A3B8',
@@ -287,6 +318,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     alignItems: 'center',
   },
+  statPillHighlight: {
+    backgroundColor: '#1a1a2e',
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+  },
   statLabel: {
     color: '#64748B',
     fontSize: 10,
@@ -299,6 +335,11 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 16,
     fontWeight: '700',
+  },
+  statValueBig: {
+    color: '#3B82F6',
+    fontSize: 18,
+    fontWeight: '800',
   },
   actionBar: {
     padding: 16,

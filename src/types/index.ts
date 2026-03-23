@@ -42,8 +42,15 @@ export interface ExportHeader {
 
 export interface ExportSummaryItem {
   cod_articulo: string;
+  descripcion: string;
+  color: string;
   total_units: number;
   total_weight: number;
+  /** Detail of each individual roll scanned within this article group */
+  rollos: Array<{
+    id_barra: string;
+    peso: number;
+  }>;
 }
 
 export interface ExportRawItem {

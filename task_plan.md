@@ -14,8 +14,22 @@
 
 ## Checklists
 - [x] Gather requirements.
-- [ ] Define `gemini.md` (Project Constitution).
-- [ ] Create Skills under `.agents/skills/`.
-- [ ] Set up React Native/Expo project (or write the code into directories).
-- [ ] Implement `expo-sqlite` database initialization.
-- [ ] Build UI.
+- [x] Define `gemini.md` (Project Constitution).
+- [x] Create Skills under `.agents/skills/`.
+- [x] Set up React Native/Expo project.
+- [x] Implement `expo-sqlite` database initialization.
+- [x] Build UI screens and Services.
+- [/] **Phase T: Trigger & Test**
+    - [x] Create `assets/master_data.csv` for standalone testing.
+    - [ ] Configure `eas.json` for APK builds.
+    - [ ] Generate Android APK.
+
+## PASOS A COMPLETAR.
+- [x] Modificar el csv con datos textiles.
+- [x] Generar códigos de barras escaneables (generate_barcodes.html).
+- [x] Integrar cámara web (html5-qrcode) para escaneo en navegador.
+- [x] Probar con la cámara de la computadora (cámara web real).
+- [x] Agrupar por cod_articulo y color.
+- [x] Revisar la descarga y el payload.
+- [x] Configurar eas.json para APK builds.
+- [ ] Generar el apk y probar en el celular.
