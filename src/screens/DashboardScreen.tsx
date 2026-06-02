@@ -1,36 +1,72 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  Alert,
   ActivityIndicator,
-  ScrollView,
-  StyleSheet,
-  StatusBar,
-  SafeAreaView,
-  Platform,
+  Alert,
   Modal,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
   TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../types';
 import { initializeDatabase } from '../db/database';
-import { getMasterCount, getLastSyncTimestamp, syncFromCsvText, checkCloudUpdate, syncFromCloud } from '../services/syncService';
+import {
+  getLastSyncTimestamp,
+  getMasterCount,
+  syncFromCloud,
+  syncFromCsvText,
+} from '../services/syncService';
 import { getOperatorName, setOperatorName } from '../services/operatorService';
 import { MOCK_ARTICLES_CSV } from '../constants/mockData';
+import { MOCK_DELIVERY_PLAN_CSV } from '../constants/mockDeliveryPlan';
+import {
+  getDeliveryPlanStats,
+  syncDeliveryPlanFromCloud,
+  syncDeliveryPlanFromCsvText,
+} from '../services/deliveryPlanService';
+import { countPendingExports, createSession } from '../services/sessionService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>;
 
+type DeliveryStats = {
+  totalItems: number;
+  totalClients: number;
+  lastSync: string | null;
+  manifestId: string | null;
+  manifestVersion: string | null;
+  isConsumed: boolean;
+  consumedAt: string | null;
+  consumedLoadId: string | null;
+};
+
+const EMPTY_DELIVERY_STATS: DeliveryStats = {
+  totalItems: 0,
+  totalClients: 0,
+  lastSync: null,
+  manifestId: null,
+  manifestVersion: null,
+  isConsumed: false,
+  consumedAt: null,
+  consumedLoadId: null,
+};
+
 export default function DashboardScreen({ navigation }: Props) {
-  const [masterCount, setMasterCount] = useState<number>(0);
+  const [masterCount, setMasterCount] = useState(0);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [deliveryStats, setDeliveryStats] = useState<DeliveryStats>(EMPTY_DELIVERY_STATS);
+  const [pendingExports, setPendingExports] = useState(0);
   const [isInitializing, setIsInitializing] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncLabel, setSyncLabel] = useState('');
   const [syncProgress, setSyncProgress] = useState(0);
 
-  // Operator State
   const [operatorName, setOperatorNameState] = useState<string | null>(null);
   const [tempOperatorName, setTempOperatorName] = useState('');
   const [showOperatorModal, setShowOperatorModal] = useState(false);
@@ -42,9 +78,11 @@ export default function DashboardScreen({ navigation }: Props) {
         const name = await getOperatorName();
         if (name) {
           setOperatorNameState(name);
+          setTempOperatorName(name);
         } else {
           setShowOperatorModal(true);
         }
+        await loadStats();
       } catch (err) {
         console.error('DB init error:', err);
       } finally {
@@ -55,118 +93,138 @@ export default function DashboardScreen({ navigation }: Props) {
 
   useFocusEffect(
     useCallback(() => {
-      if (!isInitializing) {
-        loadStats();
-      }
+      if (!isInitializing) loadStats();
     }, [isInitializing])
   );
 
   const loadStats = async () => {
-    try {
-      const count = await getMasterCount();
-      const sync = await getLastSyncTimestamp();
-      setMasterCount(count);
-      setLastSync(sync);
-    } catch (err) {
-      console.error('Error loading stats:', err);
-    }
+    const [count, sync, delivery, exportsCount] = await Promise.all([
+      getMasterCount(),
+      getLastSyncTimestamp(),
+      getDeliveryPlanStats(),
+      countPendingExports(),
+    ]);
+    setMasterCount(count);
+    setLastSync(sync);
+    setDeliveryStats(delivery);
+    setPendingExports(exportsCount);
   };
 
-  const handleNewSession = () => {
-    const sessionId = `ses_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    navigation.navigate('Scanner', { sessionId });
+  const notify = (title: string, message: string) => {
+    if (Platform.OS === 'web') alert(`${title}\n${message}`);
+    else Alert.alert(title, message);
   };
 
-  const handleForceSync = () => {
-    console.log('[Dashboard] handleForceSync called. Platform:', Platform.OS, 'masterCount:', masterCount);
-    
-    if (Platform.OS === 'web') {
-      // On web, run sync directly — window.confirm can be unreliable
-      console.log('[Dashboard] Web mode — running sync directly...');
-      runSync();
-    } else {
-      const title = 'Cargar Datos de Prueba';
-      const message = masterCount > 0
-        ? `Ya hay ${masterCount} artículos. ¿Deseás recargar los datos de prueba?`
-        : '¿Cargar los 25 artículos de prueba en la base de datos?';
-      Alert.alert(title, message, [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Cargar ahora', onPress: runSync },
-      ]);
-    }
-  };
-
-  const runSync = async () => {
+  const runStockMockSync = async () => {
     setIsSyncing(true);
+    setSyncLabel('Cargando stock de prueba...');
     setSyncProgress(0);
     try {
-      console.log('Starting sync from embedded CSV...');
-      // Use embedded CSV string — works on web and native without any fetch/require
-      const count = await syncFromCsvText(MOCK_ARTICLES_CSV, (pct) => {
-        setSyncProgress(pct);
-        console.log(`Sync progress: ${pct}%`);
-      });
+      const count = await syncFromCsvText(MOCK_ARTICLES_CSV, setSyncProgress);
       await loadStats();
-      console.log(`Sync complete. Total articles: ${count}`);
-      
-      if (Platform.OS === 'web') {
-        alert(`✅ ¡Listo! Se cargaron ${count} artículos de prueba.`);
-      } else {
-        Alert.alert('✅ ¡Listo!', `Se cargaron ${count} artículos de prueba.`);
-      }
+      notify('Stock cargado', `Se cargaron ${count} articulos de prueba.`);
     } catch (err: any) {
-      console.error('Sync error:', err);
-      const errorMsg = `No se pudo cargar los datos.\n${err?.message ?? ''}`;
-      if (Platform.OS === 'web') {
-        alert(`❌ Error: ${errorMsg}`);
-      } else {
-        Alert.alert('Error', errorMsg);
-      }
+      notify('Error', err?.message || String(err));
     } finally {
       setIsSyncing(false);
+      setSyncLabel('');
       setSyncProgress(0);
     }
   };
 
-  const handleCloudSync = async () => {
+  const runStockCloudSync = async () => {
     setIsSyncing(true);
+    setSyncLabel('Actualizando stock desde Drive...');
     setSyncProgress(0);
     try {
-      console.log('Verificando actualizaciones en la nube...');
-      const updateInfo = await checkCloudUpdate();
-      
-      if (!updateInfo.hasUpdate) {
-        if (Platform.OS === 'web') alert('El catálogo ya está en su última versión.');
-        else Alert.alert('Catálogo Actualizado', 'Ya tienes la última versión instalada.');
-        setIsSyncing(false);
-        return;
-      }
-      
-      console.log('Descargando nueva versión...');
-      const count = await syncFromCloud((pct) => {
-        setSyncProgress(pct);
-        console.log(`Cloud Sync progress: ${pct}%`);
-      });
-      
+      const count = await syncFromCloud(setSyncProgress);
       await loadStats();
-      if (Platform.OS === 'web') alert(`¡Actualizado! Se descargaron ${count} artículos desde Google Drive.`);
-      else Alert.alert('✅ ¡Actualizado!', `Se descargaron ${count} artículos desde Google Drive.`);
-      
+      notify('Stock actualizado', count > 0 ? `${count} articulos descargados.` : 'Ya estaba al dia.');
     } catch (err: any) {
-      console.error('Cloud Sync error:', err);
-      const errorMsg = `No se pudo conectar con la nube.\n${err?.message ?? ''}`;
-      if (Platform.OS === 'web') alert(`❌ Error: ${errorMsg}`);
-      else Alert.alert('Error de Conexión', errorMsg);
+      notify('Error de conexion', err?.message || String(err));
     } finally {
       setIsSyncing(false);
+      setSyncLabel('');
       setSyncProgress(0);
     }
+  };
+
+  const runDeliveryMockSync = async () => {
+    setIsSyncing(true);
+    setSyncLabel('Cargando preparado pendiente...');
+    setSyncProgress(0);
+    try {
+      const count = await syncDeliveryPlanFromCsvText(
+        MOCK_DELIVERY_PLAN_CSV,
+        setSyncProgress
+      );
+      await loadStats();
+      notify('Preparado cargado', `Se cargaron ${count} rollos preparados.`);
+    } catch (err: any) {
+      notify('Error', err?.message || String(err));
+    } finally {
+      setIsSyncing(false);
+      setSyncLabel('');
+      setSyncProgress(0);
+    }
+  };
+
+  const runDeliveryCloudSync = async () => {
+    setIsSyncing(true);
+    setSyncLabel('Actualizando preparado desde Drive...');
+    setSyncProgress(0);
+    try {
+      const count = await syncDeliveryPlanFromCloud(setSyncProgress);
+      await loadStats();
+      notify(
+        'Preparado actualizado',
+        count > 0 ? `${count} rollos preparados descargados.` : 'Ya estaba al dia.'
+      );
+    } catch (err: any) {
+      notify('Error de conexion', err?.message || String(err));
+    } finally {
+      setIsSyncing(false);
+      setSyncLabel('');
+      setSyncProgress(0);
+    }
+  };
+
+  const startPreparation = async () => {
+    const session = await createSession('preparation');
+    navigation.navigate('Scanner', {
+      sessionId: session.session_id,
+      mode: 'preparation',
+    });
+  };
+
+  const startDelivery = async () => {
+    if (deliveryStats.totalItems === 0) {
+      notify('Falta preparado', 'Primero carga o sincroniza el preparado pendiente.');
+      return;
+    }
+
+    if (deliveryStats.isConsumed) {
+      notify(
+        'Preparado ya utilizado',
+        'Esta planilla ya genero una entrega. Actualiza el preparado desde Drive antes de volver a entregar.'
+      );
+      return;
+    }
+
+    const session = await createSession('delivery', {
+      manifestId: deliveryStats.manifestId,
+      manifestVersion: deliveryStats.manifestVersion,
+    });
+    navigation.navigate('Scanner', {
+      sessionId: session.session_id,
+      mode: 'delivery',
+    });
   };
 
   const handleSaveOperatorName = async () => {
     const name = tempOperatorName.trim();
     if (!name) {
-      Alert.alert('Atención', 'Por favor, ingrese su nombre para continuar.');
+      notify('Atencion', 'Ingresa tu nombre para continuar.');
       return;
     }
     await setOperatorName(name);
@@ -174,15 +232,11 @@ export default function DashboardScreen({ navigation }: Props) {
     setShowOperatorModal(false);
   };
 
-
-
-
-
   if (isInitializing) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#3B82F6" />
-        <Text style={styles.loadingText}>Inicializando Base de Datos...</Text>
+        <Text style={styles.loadingText}>Inicializando base local...</Text>
       </SafeAreaView>
     );
   }
@@ -191,100 +245,132 @@ export default function DashboardScreen({ navigation }: Props) {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0F172A" />
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Header */}
         <View style={styles.header}>
           <View style={styles.titleRow}>
-            <Text style={styles.headerTitle}>📦 Control Stock</Text>
-            {operatorName && (
+            <Text style={styles.headerTitle}>Control Stock V2</Text>
+            {operatorName ? (
               <TouchableOpacity onPress={() => setShowOperatorModal(true)}>
-                <Text style={styles.operatorBadge}>👤 {operatorName}</Text>
+                <Text style={styles.operatorBadge}>{operatorName}</Text>
               </TouchableOpacity>
-            )}
+            ) : null}
           </View>
-          <Text style={styles.headerSubtitle}>Sistema Industrial de Inventario</Text>
+          <Text style={styles.headerSubtitle}>Preparacion y entrega de rollos</Text>
         </View>
 
-        {/* Status Cards */}
         <View style={styles.cardsRow}>
           <View style={styles.card}>
-            <Text style={styles.cardIcon}>🗄️</Text>
             <Text style={styles.cardValue}>{masterCount.toLocaleString()}</Text>
-            <Text style={styles.cardLabel}>Artículos en DB</Text>
+            <Text style={styles.cardLabel}>Stock local</Text>
           </View>
           <View style={styles.card}>
-            <Text style={styles.cardIcon}>🔄</Text>
-            <Text style={styles.cardValue}>
-              {lastSync
-                ? new Date(lastSync).toLocaleDateString('es-AR')
-                : 'Nunca'}
-            </Text>
-            <Text style={styles.cardLabel}>Última Sincronización</Text>
+            <Text style={styles.cardValue}>{deliveryStats.totalItems}</Text>
+            <Text style={styles.cardLabel}>Preparado pendiente</Text>
           </View>
         </View>
 
-        {/* Connection Status */}
-        <View style={styles.statusBadge}>
-          <View style={styles.statusDot} />
-          <Text style={styles.statusText}>Modo Offline Activo</Text>
+        <View style={styles.cardsRow}>
+          <View style={styles.card}>
+            <Text style={styles.cardValue}>{deliveryStats.totalClients}</Text>
+            <Text style={styles.cardLabel}>Clientes en entrega</Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardValue}>{pendingExports}</Text>
+            <Text style={styles.cardLabel}>Exports pendientes</Text>
+          </View>
         </View>
 
-        {/* Action Buttons */}
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={handleNewSession}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.primaryButtonIcon}>📷</Text>
-          <Text style={styles.primaryButtonText}>Nueva Sesión de Escaneo</Text>
+        <View style={styles.statusBadge}>
+          <View style={styles.statusDot} />
+          <Text style={styles.statusText}>
+            Stock: {lastSync ? new Date(lastSync).toLocaleDateString('es-AR') : 'sin sync'}
+            {'  '}| Preparado:{' '}
+            {deliveryStats.lastSync
+              ? new Date(deliveryStats.lastSync).toLocaleDateString('es-AR')
+              : 'sin sync'}
+          </Text>
+        </View>
+
+        {deliveryStats.isConsumed ? (
+          <View style={styles.consumedWarning}>
+            <Text style={styles.consumedTitle}>Preparado ya utilizado</Text>
+            <Text style={styles.consumedText}>
+              Carga: {deliveryStats.consumedLoadId || '-'} |{' '}
+              {deliveryStats.consumedAt
+                ? new Date(deliveryStats.consumedAt).toLocaleString('es-AR')
+                : 'sin fecha'}
+            </Text>
+            <Text style={styles.consumedText}>
+              Actualiza el preparado desde Drive para traer la planilla restante.
+            </Text>
+          </View>
+        ) : null}
+
+        <TouchableOpacity style={styles.primaryButton} onPress={startPreparation}>
+          <Text style={styles.primaryButtonText}>Preparar entrega</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.secondaryButton, { marginBottom: 12 }]}
-          onPress={handleCloudSync}
-          activeOpacity={0.8}
+          style={[
+            styles.deliveryButton,
+            deliveryStats.isConsumed && styles.buttonDisabled,
+          ]}
+          onPress={startDelivery}
+          disabled={deliveryStats.isConsumed}
+        >
+          <Text style={styles.primaryButtonText}>Entregar preparado</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={runStockCloudSync}
           disabled={isSyncing}
         >
-          {isSyncing ? (
-            <ActivityIndicator size="small" color="#94A3B8" />
-          ) : (
-            <Text style={styles.secondaryButtonText}>☁️ Actualizar Catálogo (Google Drive)</Text>
-          )}
+          <Text style={styles.secondaryButtonText}>Actualizar stock desde Drive</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={runDeliveryMockSync}
+          disabled={isSyncing}
+        >
+          <Text style={styles.secondaryButtonText}>Cargar preparado de prueba</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={runDeliveryCloudSync}
+          disabled={isSyncing}
+        >
+          <Text style={styles.secondaryButtonText}>Actualizar preparado desde Drive</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.tertiaryButton}
-          onPress={handleForceSync}
-          activeOpacity={0.8}
+          onPress={runStockMockSync}
           disabled={isSyncing}
         >
-          <Text style={styles.tertiaryButtonText}>Reiniciar con Datos de Prueba</Text>
+          <Text style={styles.tertiaryButtonText}>Reiniciar stock de prueba</Text>
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Sync Overlay */}
-      {isSyncing && (
+      {isSyncing ? (
         <View style={styles.syncOverlay}>
           <ActivityIndicator size="large" color="#3B82F6" />
-          <Text style={styles.syncText}>Sincronizando artículos de prueba...</Text>
+          <Text style={styles.syncText}>{syncLabel}</Text>
+          <Text style={styles.syncPercent}>{syncProgress}%</Text>
         </View>
-      )}
+      ) : null}
 
-      {/* Operator Onboarding Modal */}
-      <Modal
-        visible={showOperatorModal}
-        transparent={true}
-        animationType="fade"
-      >
+      <Modal visible={showOperatorModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalIcon}>👷</Text>
-            <Text style={styles.modalTitle}>Bienvenido</Text>
+            <Text style={styles.modalTitle}>Operario</Text>
             <Text style={styles.modalSubtitle}>
-              Por favor, ingresa tu nombre y apellido para identificar tus escaneos.
+              Nombre que se adjunta a las preparaciones y entregas.
             </Text>
             <TextInput
               style={styles.modalInput}
-              placeholder="Ej: Juan Pérez"
+              placeholder="Ej: Juan Perez"
               placeholderTextColor="#64748B"
               value={tempOperatorName}
               onChangeText={setTempOperatorName}
@@ -292,18 +378,21 @@ export default function DashboardScreen({ navigation }: Props) {
               autoFocus
             />
             <TouchableOpacity style={styles.modalButton} onPress={handleSaveOperatorName}>
-              <Text style={styles.modalButtonText}>Guardar Identidad</Text>
+              <Text style={styles.modalButtonText}>Guardar</Text>
             </TouchableOpacity>
-            {operatorName && (
-              <TouchableOpacity style={styles.modalCancelButton} onPress={() => setShowOperatorModal(false)}>
+            {operatorName ? (
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setShowOperatorModal(false)}
+              >
                 <Text style={styles.modalCancelButtonText}>Cancelar</Text>
               </TouchableOpacity>
-            )}
+            ) : null}
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
 
+    </SafeAreaView>
   );
 }
 
@@ -328,59 +417,67 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   header: {
-    marginBottom: 32,
+    marginBottom: 26,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
   },
   headerTitle: {
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: '800',
     color: '#F8FAFC',
-    letterSpacing: -0.5,
   },
   headerSubtitle: {
-    fontSize: 16,
-    color: '#64748B',
+    fontSize: 15,
+    color: '#94A3B8',
     marginTop: 4,
+  },
+  operatorBadge: {
+    backgroundColor: '#172554',
+    color: '#93C5FD',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    fontSize: 13,
+    fontWeight: '700',
+    overflow: 'hidden',
   },
   cardsRow: {
     flexDirection: 'row',
     gap: 12,
-    marginBottom: 24,
+    marginBottom: 12,
   },
   card: {
     flex: 1,
     backgroundColor: '#1E293B',
-    borderRadius: 16,
-    padding: 20,
-    alignItems: 'center',
+    borderRadius: 12,
+    padding: 18,
     borderWidth: 1,
     borderColor: '#334155',
-  },
-  cardIcon: {
-    fontSize: 28,
-    marginBottom: 8,
   },
   cardValue: {
     fontSize: 24,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#F8FAFC',
   },
   cardLabel: {
-    fontSize: 12,
     color: '#94A3B8',
     marginTop: 4,
-    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '600',
   },
   statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1E293B',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    alignSelf: 'flex-start',
-    marginBottom: 32,
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: '#334155',
+    marginBottom: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   statusDot: {
     width: 8,
@@ -390,50 +487,67 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   statusText: {
-    color: '#94A3B8',
-    fontSize: 13,
-    fontWeight: '500',
+    color: '#CBD5E1',
+    fontSize: 12,
+    flex: 1,
+  },
+  consumedWarning: {
+    backgroundColor: '#451A03',
+    borderColor: '#B45309',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  consumedTitle: {
+    color: '#FCD34D',
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  consumedText: {
+    color: '#FED7AA',
+    fontSize: 12,
+    lineHeight: 17,
   },
   primaryButton: {
-    backgroundColor: '#3B82F6',
-    borderRadius: 16,
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    flexDirection: 'row',
+    backgroundColor: '#2563EB',
+    borderRadius: 12,
+    paddingVertical: 17,
     alignItems: 'center',
-    justifyContent: 'center',
     marginBottom: 12,
-    shadowColor: '#3B82F6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
   },
-  primaryButtonIcon: {
-    fontSize: 20,
-    marginRight: 10,
+  deliveryButton: {
+    backgroundColor: '#16A34A',
+    borderRadius: 12,
+    paddingVertical: 17,
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   primaryButtonText: {
     color: '#FFFFFF',
     fontSize: 17,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   secondaryButton: {
     backgroundColor: '#1E293B',
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
+    borderRadius: 12,
+    paddingVertical: 15,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#3B82F6',
+    borderColor: '#475569',
+    marginBottom: 10,
   },
   secondaryButtonText: {
-    color: '#3B82F6',
-    fontSize: 16,
+    color: '#CBD5E1',
+    fontSize: 15,
     fontWeight: '700',
   },
   tertiaryButton: {
-    paddingVertical: 16,
+    paddingVertical: 14,
     alignItems: 'center',
   },
   tertiaryButtonText: {
@@ -443,7 +557,7 @@ const styles = StyleSheet.create({
   },
   syncOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    backgroundColor: 'rgba(15, 23, 42, 0.86)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 1000,
@@ -452,22 +566,12 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     marginTop: 16,
     fontSize: 16,
-    fontWeight: '600',
-  },
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  operatorBadge: {
-    backgroundColor: '#3B82F620',
-    color: '#3B82F6',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    fontSize: 14,
     fontWeight: '700',
-    overflow: 'hidden',
+  },
+  syncPercent: {
+    color: '#93C5FD',
+    marginTop: 6,
+    fontSize: 14,
   },
   modalOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -475,64 +579,54 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
-    zIndex: 1000,
   },
   modalContent: {
     backgroundColor: '#1E293B',
-    borderRadius: 20,
+    borderRadius: 14,
     padding: 24,
     width: '100%',
     maxWidth: 400,
-    alignItems: 'center',
     borderWidth: 1,
     borderColor: '#334155',
-  },
-  modalIcon: {
-    fontSize: 48,
-    marginBottom: 16,
   },
   modalTitle: {
     fontSize: 24,
     fontWeight: '800',
     color: '#F8FAFC',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   modalSubtitle: {
-    fontSize: 15,
     color: '#94A3B8',
-    textAlign: 'center',
-    marginBottom: 24,
-    paddingHorizontal: 10,
+    fontSize: 14,
+    marginBottom: 18,
   },
   modalInput: {
-    width: '100%',
     backgroundColor: '#0F172A',
     borderWidth: 1,
     borderColor: '#334155',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 10,
+    padding: 14,
     color: '#F8FAFC',
     fontSize: 16,
-    marginBottom: 24,
+    marginBottom: 16,
   },
   modalButton: {
-    backgroundColor: '#3B82F6',
-    width: '100%',
-    padding: 16,
-    borderRadius: 12,
+    backgroundColor: '#2563EB',
+    padding: 15,
+    borderRadius: 10,
     alignItems: 'center',
   },
   modalButtonText: {
-    color: '#FFF',
+    color: '#FFFFFF',
+    fontWeight: '800',
     fontSize: 16,
-    fontWeight: '700',
   },
   modalCancelButton: {
-    marginTop: 16,
+    marginTop: 12,
     padding: 8,
+    alignItems: 'center',
   },
   modalCancelButtonText: {
     color: '#94A3B8',
-    fontSize: 15,
   },
 });

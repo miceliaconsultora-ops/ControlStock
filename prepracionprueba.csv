@@ -1,0 +1,4 @@
+manifest_id,manifest_version,cliente_id,cliente_nombre,id_barra,cod_articulo,descripcion,peso_nominal,color
+PREP-2026-05-26,2026-05-26-001,CLI-001,Cliente Norte,7790001000011,ALG-BLA,Algodon,12.5,Blanco
+PREP-2026-05-26,2026-05-26-001,CLI-001,Cliente Norte,7790001000028,ALG-BLA,Algodon,11.8,Blanco
+PREP-2026-05-26,2026-05-26-001,CLI-002,Cliente Sur,7790001000066,ALG-ROJ,Algodon,14.5,Rojo

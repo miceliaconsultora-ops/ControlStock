@@ -5,24 +5,78 @@ import { API_CONSTANTS } from '../constants/api';
 const BATCH_SIZE = 500;
 
 /**
+ * Parse CSV text into rows. Supports quoted fields and CRLF line endings.
+ */
+export function parseCsvRows(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const next = csvText[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        field += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(field.trim());
+      field = '';
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && next === '\n') i++;
+      row.push(field.trim());
+      if (row.some((value) => value.length > 0)) rows.push(row);
+      row = [];
+      field = '';
+      continue;
+    }
+
+    field += char;
+  }
+
+  row.push(field.trim());
+  if (row.some((value) => value.length > 0)) rows.push(row);
+  return rows;
+}
+
+function requireCsvColumn(headers: string[], columnName: string): number {
+  const index = headers.indexOf(columnName);
+  if (index === -1) {
+    throw new Error(`CSV invalido: falta la columna ${columnName}`);
+  }
+  return index;
+}
+
+/**
  * Parse a CSV string into MasterArticle[].
  * Expects headers: id_barra, cod_articulo, descripcion, peso_nominal, color
  */
 export function parseCSV(csvText: string): MasterArticle[] {
-  const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
+  const rows = parseCsvRows(csvText);
+  if (rows.length < 2) return [];
 
-  const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
-  const idxIdBarra = headers.indexOf('id_barra');
-  const idxCodArticulo = headers.indexOf('cod_articulo');
-  const idxDescripcion = headers.indexOf('descripcion');
-  const idxPeso = headers.indexOf('peso_nominal');
-  const idxColor = headers.indexOf('color');
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
+  const idxIdBarra = requireCsvColumn(headers, 'id_barra');
+  const idxCodArticulo = requireCsvColumn(headers, 'cod_articulo');
+  const idxDescripcion = requireCsvColumn(headers, 'descripcion');
+  const idxPeso = requireCsvColumn(headers, 'peso_nominal');
+  const idxColor = requireCsvColumn(headers, 'color');
 
   const articles: MasterArticle[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',').map((c) => c.trim());
+  for (let i = 1; i < rows.length; i++) {
+    const cols = rows[i];
     if (!cols[idxIdBarra]) continue;
 
     articles.push({

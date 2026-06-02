@@ -35,18 +35,21 @@ export default function App() {
         <Stack.Screen
           name="Scanner"
           component={ScannerScreen}
-          options={{
-            title: 'Escáner',
+          options={({ route }) => ({
+            title: route.params?.mode === 'delivery' ? 'Entrega' : 'Preparacion',
             headerBackTitle: 'Volver',
-          }}
+          })}
         />
         <Stack.Screen
           name="Review"
           component={ReviewScreen}
-          options={{
-            title: 'Resumen de Lote',
-            headerBackTitle: 'Escáner',
-          }}
+          options={({ route }) => ({
+            title:
+              route.params?.mode === 'delivery'
+                ? 'Resumen Entrega'
+                : 'Resumen Preparacion',
+            headerBackTitle: 'Scanner',
+          })}
         />
       </Stack.Navigator>
     </NavigationContainer>

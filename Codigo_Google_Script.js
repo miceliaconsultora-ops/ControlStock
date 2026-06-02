@@ -1,75 +1,124 @@
 /**
- * SCRIPT PARA CONTROL DE STOCK INDUSTRIAL
- * Integración entre App Móvil y Google Drive
+ * SCRIPT PARA CONTROL DE STOCK INDUSTRIAL V2
+ * Integra la app movil con Google Drive.
+ *
+ * GET stock:
+ *   ?dataset=stock&action=check
+ *   ?dataset=stock&action=download
+ *
+ * GET preparado pendiente:
+ *   ?dataset=delivery&action=check
+ *   ?dataset=delivery&action=download
+ *
+ * POST:
+ *   Recibe JSON de preparacion o entrega y lo guarda en JSON_FOLDER_ID.
  */
 
 const DB_FOLDER_ID = '1IVLZcxJ5rd9jdNbNolOXhB-1rDBeSuZV';
+const DELIVERY_FOLDER_ID = '1EkL15uYd-E31Y0uD9R6jLctC4DqLCzy2'; // Carpeta del CSV de preparado pendiente.
 const JSON_FOLDER_ID = '1Q8la1daByqpgnYH3WwCeIgsnYlaBhiNp';
 
-// 1. Recibir el JSON desde la App (Envío Automático)
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
     const folder = DriveApp.getFolderById(JSON_FOLDER_ID);
-    
-    // Nombre de archivo con el Operario y la Fecha
-    const dateStr = new Date().toISOString().split('T')[0];
-    const userClean = (data.header.user || 'Desconocido').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const fileName = `Export_${dateStr}_${userClean}_${data.header.session_id.substring(0,8)}.json`;
-    
-    const blob = Utilities.newBlob(JSON.stringify(data, null, 2), "application/json", fileName);
+
+    const now = new Date();
+    const dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'HHmmss');
+    const kind = data.header && data.header.kind ? data.header.kind : 'preparation';
+    const user = (data.header && (data.header.operator || data.header.user)) || 'Desconocido';
+    const userClean = cleanFilePart(user, 'Desconocido');
+    const sessionId = data.header && data.header.session_id ? data.header.session_id : 'SIN_SESION';
+    const clientPart =
+      kind === 'delivery' && data.header && data.header.cliente_id
+        ? `_${cleanFilePart(data.header.cliente_id, 'SIN_CLIENTE')}`
+        : '';
+    const trackingPart =
+      kind === 'delivery'
+        ? cleanFilePart(data.header && data.header.load_id, `carga_${dateStr.replace(/-/g, '')}_${timeStr}`)
+        : timeStr;
+    const fileName = `${kind}_${dateStr}_${userClean}${clientPart}_${trackingPart}_${sessionId.substring(0, 8)}.json`;
+
+    const blob = Utilities.newBlob(JSON.stringify(data, null, 2), 'application/json', fileName);
     folder.createFile(blob);
-    
-    return ContentService.createTextOutput(JSON.stringify({ status: 'success', message: 'Archivo guardado en Drive correctamente.' }))
-      .setMimeType(ContentService.MimeType.JSON);
+
+    return jsonOutput({
+      status: 'success',
+      message: 'Archivo guardado en Drive correctamente.',
+      fileName,
+    });
   } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: error.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonOutput({ status: 'error', message: error.toString() });
   }
 }
 
-// 2. Enviar el Catalogo (CSV) a la App (Sincronización)
+function cleanFilePart(value, fallback) {
+  const raw = value === undefined || value === null || value === '' ? fallback : String(value);
+  return raw.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 80);
+}
+
 function doGet(e) {
   try {
-    const folder = DriveApp.getFolderById(DB_FOLDER_ID);
-    const files = folder.getFilesByType(MimeType.CSV);
-    
-    if (!files.hasNext()) {
-      return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: 'No se encontró archivo CSV en la carpeta de base de datos.' }))
-        .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // Buscar el CSV más reciente si hay varios
-    let latestFile = files.next();
-    while (files.hasNext()) {
-      let file = files.next();
-      if (file.getLastUpdated() > latestFile.getLastUpdated()) {
-        latestFile = file;
-      }
-    }
-    
     const action = e.parameter.action;
-    
-    // Si la App solo quiere saber si hay una actualización (ahorro de datos)
+    const dataset = e.parameter.dataset || 'stock';
+    const folderId = getFolderId(dataset);
+    const latestFile = getLatestCsv(folderId);
+
     if (action === 'check') {
-      return ContentService.createTextOutput(JSON.stringify({ 
-        status: 'success', 
+      return jsonOutput({
+        status: 'success',
+        dataset,
         lastUpdated: latestFile.getLastUpdated().getTime(),
-        fileName: latestFile.getName()
-      })).setMimeType(ContentService.MimeType.JSON);
+        fileName: latestFile.getName(),
+      });
     }
-    
-    // Si la App quiere descargar el CSV completo
+
     if (action === 'download') {
       return ContentService.createTextOutput(latestFile.getBlob().getDataAsString())
         .setMimeType(ContentService.MimeType.CSV);
     }
 
-    return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: 'Especifique la acción (?action=check o ?action=download)' }))
-      .setMimeType(ContentService.MimeType.JSON);
-      
+    return jsonOutput({
+      status: 'error',
+      message: 'Especifique action=check o action=download',
+    });
   } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: error.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonOutput({ status: 'error', message: error.toString() });
   }
+}
+
+function getFolderId(dataset) {
+  if (dataset === 'delivery') {
+    if (!DELIVERY_FOLDER_ID) {
+      throw new Error('DELIVERY_FOLDER_ID no configurado.');
+    }
+    return DELIVERY_FOLDER_ID;
+  }
+
+  if (dataset === 'stock') return DB_FOLDER_ID;
+  throw new Error(`Dataset no soportado: ${dataset}`);
+}
+
+function getLatestCsv(folderId) {
+  const folder = DriveApp.getFolderById(folderId);
+  const files = folder.getFilesByType(MimeType.CSV);
+
+  if (!files.hasNext()) {
+    throw new Error('No se encontro archivo CSV en la carpeta configurada.');
+  }
+
+  let latestFile = files.next();
+  while (files.hasNext()) {
+    const file = files.next();
+    if (file.getLastUpdated() > latestFile.getLastUpdated()) {
+      latestFile = file;
+    }
+  }
+  return latestFile;
+}
+
+function jsonOutput(payload) {
+  return ContentService.createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
 }

@@ -1,44 +1,57 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
+  ActivityIndicator,
   Alert,
-  StyleSheet,
-  SafeAreaView,
   Animated,
+  FlatList,
   Platform,
-  TextInput,
-  KeyboardAvoidingView,
+  SafeAreaView,
   ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { RootStackParamList, SessionScan } from '../types';
-import { hydrateScan, isDuplicateInSession, getSessionScanCount } from '../services/hydrationService';
+import { RootStackParamList, ScanEvent, ScanEventStatus } from '../types';
+import {
+  getSessionValidScanCount,
+  processScan,
+} from '../services/scanWorkflowService';
+import { getClientDeliveryCompletion } from '../services/aggregationService';
+import {
+  exportDeliveryClient,
+  maybeAutoFinalizeDelivery,
+} from '../services/exportService';
 import WebCameraScanner from '../components/WebCameraScanner';
+
+type CompletedClient = { cliente_id: string; cliente_nombre: string };
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Scanner'>;
 
-const DEBOUNCE_MS = 1500;
+const SAME_CODE_DEBOUNCE_MS = 900;
 
 export default function ScannerScreen({ route, navigation }: Props) {
-  const { sessionId } = route.params;
+  const { sessionId, mode } = route.params;
   const [permission, requestPermission] = useCameraPermissions();
-  const [recentScans, setRecentScans] = useState<SessionScan[]>([]);
+  const [recentScans, setRecentScans] = useState<ScanEvent[]>([]);
   const [totalScans, setTotalScans] = useState(0);
-  const [lastFeedback, setLastFeedback] = useState<'success' | 'duplicate' | 'pending' | null>(null);
+  const [lastFeedback, setLastFeedback] = useState<ScanEventStatus | null>(null);
   const [manualInput, setManualInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const lastScanTime = useRef<number>(0);
-  const scannedIdsRef = useRef<Set<string>>(new Set());
+  const [showWebCamera, setShowWebCamera] = useState(false);
+  const [completedClients, setCompletedClients] = useState<CompletedClient[]>([]);
+  const [sendingClientId, setSendingClientId] = useState<string | null>(null);
+  const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
+  const sentClientIdsRef = useRef<Set<string>>(new Set());
   const feedbackAnim = useRef(new Animated.Value(0)).current;
   const inputRef = useRef<TextInput>(null);
-  const [showWebCamera, setShowWebCamera] = useState(false);
 
   const isWeb = Platform.OS === 'web';
+  const isDelivery = mode === 'delivery';
 
   useEffect(() => {
     if (!isWeb && !permission?.granted) {
@@ -46,170 +59,197 @@ export default function ScannerScreen({ route, navigation }: Props) {
     }
   }, [permission, isWeb]);
 
-  const flashFeedback = (type: 'success' | 'duplicate' | 'pending') => {
-    setLastFeedback(type);
+  const flashFeedback = (status: ScanEventStatus) => {
+    setLastFeedback(status);
     feedbackAnim.setValue(1);
     Animated.timing(feedbackAnim, {
       toValue: 0,
-      duration: 1200,
+      duration: 1000,
       useNativeDriver: true,
     }).start(() => setLastFeedback(null));
   };
 
-  const processBarcode = async (rawData: string) => {
+  const notifyDuplicate = (code: string) => {
+    if (isWeb) alert(`Duplicado\nEl codigo ${code} ya fue escaneado en esta sesion.`);
+    else Alert.alert('Duplicado', `El codigo ${code} ya fue escaneado en esta sesion.`);
+  };
+
+  const processBarcode = async (rawData: string, source: string) => {
+    const code = rawData.trim();
+    if (!code) return;
+
     const now = Date.now();
-
-    // Debounce: ignore scans within 1.5s of the last
-    if (now - lastScanTime.current < DEBOUNCE_MS) return;
-    lastScanTime.current = now;
-
-    const idBarra = rawData.trim();
-    if (!idBarra) return;
+    if (
+      lastScanRef.current.code === code &&
+      now - lastScanRef.current.time < SAME_CODE_DEBOUNCE_MS
+    ) {
+      return;
+    }
+    lastScanRef.current = { code, time: now };
 
     setIsProcessing(true);
-
-    // In-memory duplicate check (instant)
-    if (scannedIdsRef.current.has(idBarra)) {
-      if (!isWeb) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      flashFeedback('duplicate');
-      Alert.alert('⚠️ Duplicado', `El código ${idBarra} ya fue escaneado en esta sesión.`);
-      setIsProcessing(false);
-      return;
-    }
-
-    // DB-level duplicate check (safety net)
-    const dup = await isDuplicateInSession(idBarra, sessionId);
-    if (dup) {
-      scannedIdsRef.current.add(idBarra);
-      if (!isWeb) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      flashFeedback('duplicate');
-      Alert.alert('⚠️ Duplicado', `El código ${idBarra} ya fue escaneado en esta sesión.`);
-      setIsProcessing(false);
-      return;
-    }
-
-    // Valid scan → hydrate
     try {
-      const scan = await hydrateScan(idBarra, sessionId);
-      scannedIdsRef.current.add(idBarra);
+      const event = await processScan(mode, sessionId, code, source);
+      setRecentScans((prev) => [event, ...prev].slice(0, 12));
+      flashFeedback(event.status);
 
-      if (!isWeb) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (!isWeb) {
+        const feedbackType =
+          event.status === 'hydrated' || event.status === 'delivered'
+            ? Haptics.NotificationFeedbackType.Success
+            : Haptics.NotificationFeedbackType.Error;
+        Haptics.notificationAsync(feedbackType);
+      }
 
-      flashFeedback(scan.status === 'hydrated' ? 'success' : 'pending');
+      if (event.status === 'duplicate_session') notifyDuplicate(code);
 
-      // Add to recent scans (keep last 10)
-      setRecentScans((prev) => [scan, ...prev].slice(0, 10));
-
-      // Update total count
-      const count = await getSessionScanCount(sessionId);
+      const count = await getSessionValidScanCount(sessionId, mode);
       setTotalScans(count);
+
+      if (isDelivery && event.status === 'delivered' && event.cliente_id) {
+        const clienteId = event.cliente_id;
+        const completion = await getClientDeliveryCompletion(sessionId, clienteId);
+        if (completion.isComplete && !sentClientIdsRef.current.has(clienteId)) {
+          const clienteNombre =
+            event.cliente_nombre ?? completion.clienteNombre ?? 'Cliente';
+          setCompletedClients((prev) =>
+            prev.some((c) => c.cliente_id === clienteId)
+              ? prev
+              : [...prev, { cliente_id: clienteId, cliente_nombre: clienteNombre }]
+          );
+        }
+      }
     } catch (err) {
       console.error('Scan error:', err);
+      flashFeedback('error');
       if (!isWeb) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleBarcodeScanned = async ({ data }: { data: string }) => {
-    await processBarcode(data);
-  };
-
   const handleManualSubmit = async () => {
     const code = manualInput.trim();
     if (!code) return;
     setManualInput('');
-    await processBarcode(code);
-    // Re-focus input for quick successive scans
+    await processBarcode(code, 'manual');
     setTimeout(() => inputRef.current?.focus(), 100);
   };
 
-  const handleGoToReview = () => {
-    navigation.navigate('Review', { sessionId });
+  const finishLoad = (title: string, message: string) => {
+    if (isWeb) {
+      alert(`${title}\n${message}`);
+      navigation.popToTop();
+    } else {
+      Alert.alert(title, message, [
+        { text: 'OK', onPress: () => navigation.popToTop() },
+      ]);
+    }
   };
 
-  const feedbackColor =
-    lastFeedback === 'success'
-      ? '#22C55E'
-      : lastFeedback === 'duplicate'
-      ? '#EF4444'
-      : lastFeedback === 'pending'
-      ? '#F59E0B'
-      : 'transparent';
+  const handleSendClient = async (cliente: CompletedClient) => {
+    if (sendingClientId) return;
+    setSendingClientId(cliente.cliente_id);
+    try {
+      const result = await exportDeliveryClient(sessionId, cliente.cliente_id);
 
-  // ── WEB MODE ──────────────────────────────────────────────────────────────
+      if (result !== 'uploaded') {
+        // Upload failed: shared locally, keep the banner so it can be retried.
+        const message =
+          'No se pudo subir a Drive. Se guardo localmente. Toca de nuevo para reintentar.';
+        if (isWeb) alert(`Sin conexion\n${message}`);
+        else Alert.alert('Sin conexion', message);
+        return;
+      }
+
+      sentClientIdsRef.current.add(cliente.cliente_id);
+      setCompletedClients((prev) =>
+        prev.filter((c) => c.cliente_id !== cliente.cliente_id)
+      );
+
+      const finalized = await maybeAutoFinalizeDelivery(sessionId);
+      if (finalized) {
+        finishLoad(
+          'Carga finalizada',
+          `Se envio ${cliente.cliente_nombre} y se cerro la carga. Esta planilla no podra reutilizarse.`
+        );
+        return;
+      }
+
+      if (isWeb) alert(`Cliente enviado\nJSON de ${cliente.cliente_nombre} enviado a Drive.`);
+      else Alert.alert('Cliente enviado', `JSON de ${cliente.cliente_nombre} enviado a Drive.`);
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      if (isWeb) alert(`Error\n${message}`);
+      else Alert.alert('Error', message);
+    } finally {
+      setSendingClientId(null);
+    }
+  };
+
+  const feedbackColor = getFeedbackColor(lastFeedback);
+  const title = isDelivery ? 'Entrega de preparado' : 'Preparacion de entrega';
+
   if (isWeb) {
     return (
       <SafeAreaView style={styles.container}>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
-          {/* Header */}
           <View style={styles.webHeader}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-              <Text style={styles.backBtnText}>← Volver</Text>
+              <Text style={styles.backBtnText}>Volver</Text>
             </TouchableOpacity>
-            <Text style={styles.webHeaderTitle}>📦 Sesión de Escaneo</Text>
-            <Text style={styles.webSubtitle}>Escaneá con la cámara, lector USB, o ingreso manual.</Text>
-            <Text style={styles.sessionLabel}>ID: {sessionId.substring(0, 12)}...</Text>
+            <Text style={styles.webHeaderTitle}>{title}</Text>
+            <Text style={styles.webSubtitle}>
+              {isDelivery
+                ? 'Escanea rollos ya preparados. El cliente se toma del manifiesto.'
+                : 'Escanea rollos contra el stock local sincronizado.'}
+            </Text>
+            <Text style={styles.sessionLabel}>ID: {sessionId.substring(0, 16)}...</Text>
           </View>
 
-          {/* Counter + Feedback */}
           <View style={styles.counterBar}>
             <Text style={styles.counterText}>
-              🔢 Escaneados: <Text style={styles.counterValue}>{totalScans}</Text>
+              Valid o registrados: <Text style={styles.counterValue}>{totalScans}</Text>
             </Text>
-            {lastFeedback && (
+            {lastFeedback ? (
               <Animated.View
-                style={[
-                  styles.feedbackBadge,
-                  {
-                    backgroundColor: feedbackColor,
-                    opacity: feedbackAnim,
-                  },
-                ]}
+                style={[styles.feedbackBadge, { backgroundColor: feedbackColor, opacity: feedbackAnim }]}
               >
-                <Text style={styles.feedbackBadgeText}>
-                  {lastFeedback === 'success'
-                    ? '✓ Registrado'
-                    : lastFeedback === 'duplicate'
-                    ? '⚠ Duplicado'
-                    : '⏳ Pendiente'}
-                </Text>
+                <Text style={styles.feedbackBadgeText}>{getStatusLabel(lastFeedback)}</Text>
               </Animated.View>
-            )}
+            ) : null}
           </View>
 
-          {/* Camera toggle button */}
+          <CompletedClientBanners
+            clients={completedClients}
+            sendingId={sendingClientId}
+            onSend={handleSendClient}
+          />
+
           <View style={styles.cameraModeToggle}>
             <TouchableOpacity
-              style={[
-                styles.cameraToggleBtn,
-                showWebCamera && styles.cameraToggleBtnActive,
-              ]}
+              style={[styles.cameraToggleBtn, showWebCamera && styles.cameraToggleBtnActive]}
               onPress={() => setShowWebCamera(!showWebCamera)}
             >
               <Text style={styles.cameraToggleBtnText}>
-                {showWebCamera ? '✕ Cerrar Cámara' : '📷 Abrir Cámara'}
+                {showWebCamera ? 'Cerrar camara' : 'Abrir camara'}
               </Text>
             </TouchableOpacity>
           </View>
 
-          {/* Web Camera Scanner */}
-          {showWebCamera && (
+          {showWebCamera ? (
             <View style={styles.webCameraContainer}>
               <WebCameraScanner
-                onBarcodeScanned={(data) => processBarcode(data)}
+                onBarcodeScanned={(data: string) => processBarcode(data, 'web_camera')}
                 onClose={() => setShowWebCamera(false)}
               />
             </View>
-          )}
+          ) : null}
 
-          {/* Manual input area */}
           <View style={styles.webInputArea}>
-            <Text style={styles.webInputLabel}>
-              Ingresá o pegá el código de barras:
-            </Text>
+            <Text style={styles.webInputLabel}>Codigo de barras</Text>
             <Text style={styles.webInputHint}>
-              Podés usar un lector USB/Bluetooth — el código se enviará al presionar Enter.
+              Lector USB/Bluetooth, pegado manual o Enter desde el input.
             </Text>
             <View style={styles.webInputRow}>
               <TextInput
@@ -223,91 +263,41 @@ export default function ScannerScreen({ route, navigation }: Props) {
                 editable={!isProcessing}
                 autoFocus={!showWebCamera}
                 returnKeyType="done"
-                keyboardType="number-pad"
               />
               <TouchableOpacity
                 style={[styles.scanBtn, isProcessing && styles.scanBtnDisabled]}
                 onPress={handleManualSubmit}
                 disabled={isProcessing}
               >
-                <Text style={styles.scanBtnText}>
-                  {isProcessing ? '...' : '➕ Registrar'}
-                </Text>
+                <Text style={styles.scanBtnText}>{isProcessing ? '...' : 'Registrar'}</Text>
               </TouchableOpacity>
             </View>
           </View>
 
-          {/* Quick-access barcodes from mock data */}
           <View style={styles.quickCodesArea}>
-            <Text style={styles.listTitle}>Códigos de prueba (tap para escanear):</Text>
+            <Text style={styles.listTitle}>Codigos de prueba</Text>
             <View style={styles.quickCodesGrid}>
               {MOCK_BARCODES.map((code) => (
                 <TouchableOpacity
                   key={code}
                   style={styles.quickCodeChip}
-                  onPress={() => processBarcode(code)}
-                  disabled={isProcessing || scannedIdsRef.current.has(code)}
+                  onPress={() => processBarcode(code, 'quick_test')}
+                  disabled={isProcessing}
                 >
-                  <Text
-                    style={[
-                      styles.quickCodeText,
-                      scannedIdsRef.current.has(code) && styles.quickCodeUsed,
-                    ]}
-                  >
-                    {code}
-                  </Text>
+                  <Text style={styles.quickCodeText}>{code}</Text>
                 </TouchableOpacity>
               ))}
             </View>
           </View>
 
-          {/* Recent scans */}
-          <View style={styles.listContainer}>
-            <Text style={styles.listTitle}>Últimos Escaneos</Text>
-            {recentScans.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyIcon}>📦</Text>
-                <Text style={styles.emptyText}>
-                  Ingresá un código de barras arriba para comenzar
-                </Text>
-              </View>
-            ) : (
-              <FlatList
-                data={recentScans}
-                keyExtractor={(item) => item.id_barra + item.scan_timestamp}
-                renderItem={({ item }) => (
-                  <View style={styles.scanItem}>
-                    <View
-                      style={[
-                        styles.statusIndicator,
-                        {
-                          backgroundColor:
-                            item.status === 'hydrated' ? '#22C55E' : '#F59E0B',
-                        },
-                      ]}
-                    />
-                    <View style={styles.scanItemContent}>
-                      <Text style={styles.scanBarcode}>{item.id_barra}</Text>
-                      <Text style={styles.scanDetail}>
-                        {item.status === 'hydrated'
-                          ? `${item.cod_articulo} · ${item.descripcion} · ${item.peso_nominal}kg · ${item.color}`
-                          : '⚠️ Código no encontrado en maestro'}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-              />
-            )}
-          </View>
+          <RecentScansList recentScans={recentScans} />
 
-          {/* Action bar */}
           <View style={styles.actionBar}>
             <TouchableOpacity
               style={styles.reviewButton}
-              onPress={handleGoToReview}
-              activeOpacity={0.8}
+              onPress={() => navigation.navigate('Review', { sessionId, mode })}
             >
-              <Text style={styles.reviewButtonText}>📋 Ver Resumen ({totalScans})</Text>
+              <Text style={styles.reviewButtonText}>Ver resumen ({totalScans})</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -315,17 +305,16 @@ export default function ScannerScreen({ route, navigation }: Props) {
     );
   }
 
-  // ── NATIVE MODE (camera) ─────────────────────────────────────────────────
   if (!permission?.granted) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.permissionBox}>
-          <Text style={styles.permissionTitle}>📷 Permiso de Cámara</Text>
+          <Text style={styles.permissionTitle}>Permiso de camara</Text>
           <Text style={styles.permissionText}>
-            Se requiere acceso a la cámara para escanear códigos de barra.
+            Se requiere acceso a la camara para escanear codigos.
           </Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>Conceder Permiso</Text>
+            <Text style={styles.permissionButtonText}>Conceder permiso</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -334,100 +323,174 @@ export default function ScannerScreen({ route, navigation }: Props) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Camera View - top half */}
       <View style={styles.cameraContainer}>
         <CameraView
           style={styles.camera}
           barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'code128', 'code39', 'qr'] }}
-          onBarcodeScanned={handleBarcodeScanned}
+          onBarcodeScanned={({ data }) => processBarcode(data, 'native_camera')}
         />
-        {/* Scan overlay */}
         <View style={styles.scanOverlay}>
           <View style={styles.scanFrame} />
         </View>
-        {/* Flash feedback overlay */}
         <Animated.View
-          style={[
-            styles.feedbackOverlay,
-            {
-              backgroundColor: feedbackColor,
-              opacity: feedbackAnim,
-            },
-          ]}
+          style={[styles.feedbackOverlay, { backgroundColor: feedbackColor, opacity: feedbackAnim }]}
         />
       </View>
 
-      {/* Scan counter */}
       <View style={styles.counterBar}>
         <Text style={styles.counterText}>
-          🔢 Escaneados: <Text style={styles.counterValue}>{totalScans}</Text>
+          Registrados: <Text style={styles.counterValue}>{totalScans}</Text>
         </Text>
-        <Text style={styles.sessionLabel}>Sesión: {sessionId.substring(0, 12)}...</Text>
+        <Text style={styles.sessionLabel}>{title}</Text>
       </View>
 
-      {/* Recent scans list - bottom half */}
-      <View style={styles.listContainer}>
-        <Text style={styles.listTitle}>Últimos Escaneos</Text>
-        {recentScans.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>📦</Text>
-            <Text style={styles.emptyText}>Apunta la cámara a un código de barras</Text>
-          </View>
-        ) : (
-          <FlatList
-            data={recentScans}
-            keyExtractor={(item) => item.id_barra + item.scan_timestamp}
-            renderItem={({ item }) => (
-              <View style={styles.scanItem}>
-                <View
-                  style={[
-                    styles.statusIndicator,
-                    {
-                      backgroundColor:
-                        item.status === 'hydrated' ? '#22C55E' : '#F59E0B',
-                    },
-                  ]}
-                />
-                <View style={styles.scanItemContent}>
-                  <Text style={styles.scanBarcode}>{item.id_barra}</Text>
-                  <Text style={styles.scanDetail}>
-                    {item.status === 'hydrated'
-                      ? `${item.cod_articulo} · ${item.descripcion} · ${item.peso_nominal}kg`
-                      : 'Pendiente de datos maestros'}
-                  </Text>
-                </View>
-              </View>
-            )}
-          />
-        )}
-      </View>
+      <CompletedClientBanners
+        clients={completedClients}
+        sendingId={sendingClientId}
+        onSend={handleSendClient}
+      />
 
-      {/* Action bar */}
+      <RecentScansList recentScans={recentScans} />
+
       <View style={styles.actionBar}>
         <TouchableOpacity
           style={styles.reviewButton}
-          onPress={handleGoToReview}
-          activeOpacity={0.8}
+          onPress={() => navigation.navigate('Review', { sessionId, mode })}
         >
-          <Text style={styles.reviewButtonText}>📋 Ver Resumen ({totalScans})</Text>
+          <Text style={styles.reviewButtonText}>Ver resumen ({totalScans})</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
 
-// Mock barcodes from textile mock data for quick testing on web
+function CompletedClientBanners({
+  clients,
+  sendingId,
+  onSend,
+}: {
+  clients: CompletedClient[];
+  sendingId: string | null;
+  onSend: (cliente: CompletedClient) => void;
+}) {
+  if (clients.length === 0) return null;
+  return (
+    <View style={styles.completeBanners}>
+      {clients.map((cliente) => {
+        const isSending = sendingId === cliente.cliente_id;
+        return (
+          <TouchableOpacity
+            key={cliente.cliente_id}
+            style={styles.completeBanner}
+            onPress={() => onSend(cliente)}
+            disabled={isSending}
+            activeOpacity={0.85}
+          >
+            {isSending ? (
+              <ActivityIndicator color="#052E16" />
+            ) : (
+              <>
+                <Text style={styles.completeBannerTitle}>Cliente completo - Enviar</Text>
+                <Text style={styles.completeBannerName}>{cliente.cliente_nombre}</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+function RecentScansList({ recentScans }: { recentScans: ScanEvent[] }) {
+  return (
+    <View style={styles.listContainer}>
+      <Text style={styles.listTitle}>Ultimos escaneos</Text>
+      {recentScans.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>Escanea un codigo para comenzar</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={recentScans}
+          keyExtractor={(item) => item.event_id}
+          renderItem={({ item }) => (
+            <View style={styles.scanItem}>
+              <View
+                style={[
+                  styles.statusIndicator,
+                  { backgroundColor: getFeedbackColor(item.status) },
+                ]}
+              />
+              <View style={styles.scanItemContent}>
+                <Text style={styles.scanBarcode}>{item.id_barra}</Text>
+                <Text style={styles.scanDetail}>{getScanDetail(item)}</Text>
+              </View>
+            </View>
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
+function getFeedbackColor(status: ScanEventStatus | null): string {
+  if (status === 'hydrated' || status === 'delivered') return '#22C55E';
+  if (status === 'pending') return '#F59E0B';
+  if (status === 'duplicate_session') return '#EF4444';
+  if (
+    status === 'not_prepared' ||
+    status === 'wrong_client' ||
+    status === 'error'
+  ) {
+    return '#DC2626';
+  }
+  return 'transparent';
+}
+
+function getStatusLabel(status: ScanEventStatus): string {
+  switch (status) {
+    case 'hydrated':
+      return 'Preparado';
+    case 'delivered':
+      return 'Entregado';
+    case 'pending':
+      return 'Pendiente maestro';
+    case 'not_prepared':
+      return 'No preparado';
+    case 'wrong_client':
+      return 'Cliente incorrecto';
+    case 'duplicate_session':
+      return 'Duplicado';
+    default:
+      return 'Error';
+  }
+}
+
+function getScanDetail(item: ScanEvent): string {
+  if (item.status === 'delivered') {
+    return `${item.cliente_nombre ?? 'Cliente'} | ${item.cod_articulo ?? ''} | ${item.peso_nominal ?? 0}kg`;
+  }
+  if (item.status === 'hydrated') {
+    return `${item.cod_articulo ?? ''} | ${item.descripcion ?? ''} | ${item.peso_nominal ?? 0}kg | ${item.color ?? ''}`;
+  }
+  if (item.status === 'pending') return 'No encontrado en stock, queda pendiente';
+  if (item.status === 'not_prepared') return 'No esta en el preparado pendiente';
+  if (item.status === 'wrong_client') return 'Pertenece a otro cliente';
+  if (item.status === 'duplicate_session') return 'Ya escaneado en esta sesion';
+  return 'Error de lectura';
+}
+
 const MOCK_BARCODES = [
-  '7790001000011', // ALG-BLA Algodón Blanco 12.5kg
-  '7790001000028', // ALG-BLA Algodón Blanco 11.8kg
-  '7790001000042', // ALG-NEG Algodón Negro 10.0kg
-  '7790001000066', // ALG-ROJ Algodón Rojo 14.5kg
-  '7790001000097', // POL-BLA Poliéster Blanco 8.5kg
-  '7790001000127', // POL-NEG Poliéster Negro 7.5kg
-  '7790001000158', // LIN-BLA Lino Blanco 6.5kg
-  '7790001000172', // LIN-CRU Lino Crudo 6.8kg
-  '7790001000219', // DEN-AZU Denim Azul 15.0kg
-  '7790001000257', // GAB-BEI Gabardina Beige 10.5kg
+  '7790001000011',
+  '7790001000028',
+  '7790001000042',
+  '7790001000066',
+  '7790001000097',
+  '7790001000127',
+  '7790001000158',
+  '7790001000172',
+  '7790001000219',
+  '7790001000257',
 ];
 
 const styles = StyleSheet.create({
@@ -435,7 +498,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0F172A',
   },
-  // ── WEB STYLES ─────────────────────────────────────────────────────────────
   webHeader: {
     padding: 16,
     paddingTop: 20,
@@ -448,7 +510,7 @@ const styles = StyleSheet.create({
   backBtnText: {
     color: '#3B82F6',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   webHeaderTitle: {
     fontSize: 22,
@@ -467,10 +529,10 @@ const styles = StyleSheet.create({
   },
   cameraToggleBtn: {
     backgroundColor: '#1E293B',
-    borderRadius: 12,
+    borderRadius: 10,
     paddingVertical: 14,
     alignItems: 'center',
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: '#3B82F6',
   },
   cameraToggleBtnActive: {
@@ -480,7 +542,7 @@ const styles = StyleSheet.create({
   cameraToggleBtnText: {
     color: '#F8FAFC',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   webCameraContainer: {
     padding: 16,
@@ -495,7 +557,7 @@ const styles = StyleSheet.create({
   webInputLabel: {
     color: '#CBD5E1',
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '800',
     marginBottom: 4,
   },
   webInputHint: {
@@ -523,9 +585,9 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   scanBtn: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: '#2563EB',
     borderRadius: 10,
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -535,7 +597,7 @@ const styles = StyleSheet.create({
   scanBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   quickCodesArea: {
     padding: 16,
@@ -560,23 +622,38 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: Platform.OS === 'web' ? 'monospace' : 'Courier',
   },
-  quickCodeUsed: {
-    color: '#334155',
-    textDecorationLine: 'line-through',
+  completeBanners: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    gap: 8,
   },
-  feedbackBadge: {
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  completeBanner: {
+    backgroundColor: '#22C55E',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 64,
+    shadowColor: '#22C55E',
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
-  feedbackBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 13,
+  completeBannerTitle: {
+    color: '#052E16',
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  completeBannerName: {
+    color: '#064E3B',
+    fontSize: 14,
     fontWeight: '700',
+    marginTop: 2,
   },
-  // ── NATIVE CAMERA STYLES ───────────────────────────────────────────────────
   cameraContainer: {
-    height: '40%',
+    height: '42%',
     position: 'relative',
     overflow: 'hidden',
   },
@@ -594,12 +671,10 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#3B82F6',
     borderRadius: 12,
-    backgroundColor: 'transparent',
   },
   feedbackOverlay: {
     ...StyleSheet.absoluteFillObject,
   },
-  // ── SHARED STYLES ──────────────────────────────────────────────────────────
   counterBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -612,16 +687,26 @@ const styles = StyleSheet.create({
   },
   counterText: {
     color: '#CBD5E1',
-    fontSize: 15,
+    fontSize: 14,
   },
   counterValue: {
     color: '#3B82F6',
-    fontWeight: '700',
+    fontWeight: '800',
     fontSize: 18,
   },
   sessionLabel: {
     color: '#64748B',
     fontSize: 11,
+  },
+  feedbackBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  feedbackBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
   },
   listContainer: {
     flex: 1,
@@ -629,20 +714,16 @@ const styles = StyleSheet.create({
   },
   listTitle: {
     color: '#94A3B8',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 1,
     marginBottom: 12,
   },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: 12,
+    minHeight: 140,
   },
   emptyText: {
     color: '#64748B',
@@ -653,7 +734,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1E293B',
-    borderRadius: 12,
+    borderRadius: 10,
     padding: 14,
     marginBottom: 8,
     borderWidth: 1,
@@ -664,7 +745,6 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     marginRight: 12,
-    flexShrink: 0,
   },
   scanItemContent: {
     flex: 1,
@@ -672,7 +752,7 @@ const styles = StyleSheet.create({
   scanBarcode: {
     color: '#F8FAFC',
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
     fontFamily: Platform.OS === 'web' ? 'monospace' : 'Courier',
   },
   scanDetail: {
@@ -688,20 +768,15 @@ const styles = StyleSheet.create({
     borderTopColor: '#1E293B',
   },
   reviewButton: {
-    backgroundColor: '#8B5CF6',
-    borderRadius: 14,
+    backgroundColor: '#4F46E5',
+    borderRadius: 12,
     paddingVertical: 16,
     alignItems: 'center',
-    shadowColor: '#8B5CF6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
   },
   reviewButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   permissionBox: {
     flex: 1,
@@ -711,7 +786,7 @@ const styles = StyleSheet.create({
   },
   permissionTitle: {
     fontSize: 24,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#F8FAFC',
     marginBottom: 12,
   },
@@ -723,14 +798,14 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   permissionButton: {
-    backgroundColor: '#3B82F6',
-    borderRadius: 12,
+    backgroundColor: '#2563EB',
+    borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 28,
   },
   permissionButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 });

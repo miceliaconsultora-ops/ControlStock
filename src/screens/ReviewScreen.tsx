@@ -1,45 +1,58 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  Alert,
   ActivityIndicator,
-  StyleSheet,
-  SafeAreaView,
+  Alert,
+  FlatList,
   Platform,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
-import { RootStackParamList, AggregatedArticle } from '../types';
-import { getAggregatedData, getSessionTotals } from '../services/aggregationService';
-import { exportAndShare, purgeSession } from '../services/exportService';
+import {
+  AggregatedArticle,
+  AggregatedDeliveryClient,
+  RootStackParamList,
+} from '../types';
+import {
+  getAggregatedData,
+  getDeliveryAggregatedClients,
+  getSessionTotalsByMode,
+} from '../services/aggregationService';
+import { exportAndShare } from '../services/exportService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Review'>;
 
 export default function ReviewScreen({ route, navigation }: Props) {
-  const { sessionId } = route.params;
-  const [aggregated, setAggregated] = useState<AggregatedArticle[]>([]);
-  const [totals, setTotals] = useState({ totalUnits: 0, totalWeight: 0 });
+  const { sessionId, mode } = route.params;
+  const [articles, setArticles] = useState<AggregatedArticle[]>([]);
+  const [clients, setClients] = useState<AggregatedDeliveryClient[]>([]);
+  const [totals, setTotals] = useState({ totalUnits: 0, totalWeight: 0, exceptions: 0 });
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+
+  const isDelivery = mode === 'delivery';
 
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [])
+    }, [sessionId, mode])
   );
 
   const loadData = async () => {
     try {
       setIsLoading(true);
-      const [data, sessionTotals] = await Promise.all([
-        getAggregatedData(sessionId),
-        getSessionTotals(sessionId),
+      const [summaryTotals, prepData, deliveryData] = await Promise.all([
+        getSessionTotalsByMode(sessionId, mode),
+        isDelivery ? Promise.resolve([]) : getAggregatedData(sessionId),
+        isDelivery ? getDeliveryAggregatedClients(sessionId) : Promise.resolve([]),
       ]);
-      setAggregated(data);
-      setTotals(sessionTotals);
+      setTotals(summaryTotals);
+      setArticles(prepData);
+      setClients(deliveryData);
     } catch (err) {
       console.error('Error loading review data:', err);
     } finally {
@@ -47,71 +60,42 @@ export default function ReviewScreen({ route, navigation }: Props) {
     }
   };
 
+  const notify = (title: string, message: string) => {
+    if (Platform.OS === 'web') alert(`${title}\n${message}`);
+    else Alert.alert(title, message);
+  };
+
   const handleFinalize = () => {
-    console.log('[Review] handleFinalize called. totalUnits:', totals.totalUnits);
-    
     if (totals.totalUnits === 0) {
-      if (Platform.OS === 'web') {
-        alert('No hay escaneos en esta sesión para exportar.');
-      } else {
-        Alert.alert('Sin Datos', 'No hay escaneos en esta sesión para exportar.');
-      }
+      notify('Sin datos', 'No hay escaneos validos para exportar.');
       return;
     }
 
     if (Platform.OS === 'web') {
-      // On web, run export directly — window.confirm can be unreliable
-      console.log('[Review] Web mode — exporting directly...');
       performExport();
-    } else {
-      const message = `¿Confirmas el envío del lote?\n\n• ${totals.totalUnits} rollos\n• ${totals.totalWeight.toFixed(2)} kg total\n• ${aggregated.length} artículos distintos`;
-      Alert.alert(
-        'Finalizar Sesión',
-        message,
-        [
-          { text: 'Cancelar', style: 'cancel' },
-          {
-            text: 'Exportar y Enviar',
-            style: 'destructive',
-            onPress: performExport,
-          },
-        ]
-      );
+      return;
     }
+
+    const detail = isDelivery
+      ? `${totals.totalUnits} rollos entregados en ${clients.length} cliente(s).`
+      : `${totals.totalUnits} rollos preparados en ${articles.length} grupo(s).`;
+
+    Alert.alert('Finalizar sesion', detail, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Exportar', style: 'destructive', onPress: performExport },
+    ]);
   };
 
   const performExport = async () => {
     try {
       setIsExporting(true);
-      console.log('[Review] performExport starting for session:', sessionId);
-      
-      const { getOperatorName } = await import('../services/operatorService');
-      const opName = await getOperatorName() || 'Desconocido';
-      
-      const success = await exportAndShare(sessionId, 'DEVICE_001', opName);
-      console.log('[Review] exportAndShare returned:', success);
-      if (success) {
-        console.log('[Review] Purging session...');
-        await purgeSession(sessionId);
-        console.log('[Review] Session purged. Navigating back...');
-
-        if (Platform.OS === 'web') {
-          // Don't use alert() here — it can block. Just navigate.
-          navigation.popToTop();
-        } else {
-          Alert.alert('✅ Éxito', 'El lote fue exportado correctamente. La sesión ha sido limpiada.', [
-            { text: 'Volver al Inicio', onPress: () => navigation.popToTop() },
-          ]);
-        }
-      }
+      await exportAndShare(sessionId, undefined, undefined, mode);
+      navigation.popToTop();
     } catch (err: any) {
-      console.error('[Review] Export error:', err);
-      const msg = 'La sesión NO fue eliminada. Podés intentar nuevamente.';
-      if (Platform.OS === 'web') {
-        alert(`Exportación Cancelada: ${msg}\n\nError: ${err?.message || err}`);
-      } else {
-        Alert.alert('Exportación Cancelada', msg);
-      }
+      notify(
+        'Exportacion cancelada',
+        `La sesion queda guardada localmente. Error: ${err?.message || err}`
+      );
     } finally {
       setIsExporting(false);
     }
@@ -121,7 +105,7 @@ export default function ReviewScreen({ route, navigation }: Props) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingBox}>
-          <ActivityIndicator size="large" color="#8B5CF6" />
+          <ActivityIndicator size="large" color="#4F46E5" />
           <Text style={styles.loadingText}>Cargando resumen...</Text>
         </View>
       </SafeAreaView>
@@ -130,7 +114,6 @@ export default function ReviewScreen({ route, navigation }: Props) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Totals Header */}
       <View style={styles.totalsHeader}>
         <View style={styles.totalCard}>
           <Text style={styles.totalLabel}>Rollos</Text>
@@ -138,67 +121,107 @@ export default function ReviewScreen({ route, navigation }: Props) {
         </View>
         <View style={styles.totalDivider} />
         <View style={styles.totalCard}>
-          <Text style={styles.totalLabel}>Peso Total</Text>
+          <Text style={styles.totalLabel}>Peso</Text>
           <Text style={styles.totalValue}>{totals.totalWeight.toFixed(2)} kg</Text>
         </View>
       </View>
 
-      {/* Session Info */}
       <View style={styles.sessionInfo}>
         <Text style={styles.sessionLabel}>
-          SESIÓN: {sessionId.substring(0, 12)}...
+          {isDelivery ? 'ENTREGA' : 'PREPARACION'}: {sessionId.substring(0, 16)}...
         </Text>
         <Text style={styles.articleCount}>
-          {aggregated.length} artículo{aggregated.length !== 1 ? 's' : ''} distintos
+          {isDelivery ? `${clients.length} clientes` : `${articles.length} grupos`}
         </Text>
       </View>
 
-      {/* Aggregated List — grouped by cod_articulo (tela + color) */}
-      <FlatList
-        data={aggregated}
-        keyExtractor={(item) => item.cod_articulo}
-        contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => (
-          <View style={styles.articleCard}>
-            <View style={styles.articleHeader}>
-              <Text style={styles.articleCode}>{item.cod_articulo}</Text>
-              <View style={styles.colorTag}>
-                <Text style={styles.colorTagText}>{item.color}</Text>
-              </View>
-            </View>
-            <Text style={styles.articleDesc} numberOfLines={1}>
-              {item.descripcion} — {item.color}
-            </Text>
-            <View style={styles.articleStats}>
-              <View style={styles.statPill}>
-                <Text style={styles.statLabel}>Rollos</Text>
-                <Text style={styles.statValue}>{item.total_units}</Text>
-              </View>
-              <View style={[styles.statPill, styles.statPillHighlight]}>
-                <Text style={styles.statLabel}>Kg Total</Text>
-                <Text style={styles.statValueBig}>{item.total_weight.toFixed(2)}</Text>
-              </View>
-            </View>
-          </View>
-        )}
-      />
+      {totals.exceptions > 0 ? (
+        <View style={styles.warningBox}>
+          <Text style={styles.warningText}>
+            Hay {totals.exceptions} lectura(s) con alerta. No se exportan como validas.
+          </Text>
+        </View>
+      ) : null}
 
-      {/* Action Bar */}
+      {isDelivery ? (
+        <FlatList
+          data={clients}
+          keyExtractor={(item) => item.cliente_id}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item }) => <DeliveryClientCard item={item} />}
+        />
+      ) : (
+        <FlatList
+          data={articles}
+          keyExtractor={(item) => `${item.cod_articulo}-${item.color}`}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item }) => <PreparationArticleCard item={item} />}
+        />
+      )}
+
       <View style={styles.actionBar}>
         <TouchableOpacity
           style={[styles.finalizeButton, isExporting && styles.buttonDisabled]}
           onPress={handleFinalize}
           disabled={isExporting}
-          activeOpacity={0.8}
         >
           {isExporting ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.finalizeButtonText}>📤 Finalizar y Exportar Lote (JSON)</Text>
+            <Text style={styles.finalizeButtonText}>
+              {isDelivery ? 'Exportar entrega por cliente' : 'Exportar preparacion'}
+            </Text>
           )}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
+  );
+}
+
+function PreparationArticleCard({ item }: { item: AggregatedArticle }) {
+  return (
+    <View style={styles.itemCard}>
+      <View style={styles.itemHeader}>
+        <Text style={styles.itemCode}>{item.cod_articulo}</Text>
+        <View style={styles.tag}>
+          <Text style={styles.tagText}>{item.color}</Text>
+        </View>
+      </View>
+      <Text style={styles.itemDesc} numberOfLines={1}>
+        {item.descripcion}
+      </Text>
+      <StatsRow units={item.total_units} weight={item.total_weight} />
+    </View>
+  );
+}
+
+function DeliveryClientCard({ item }: { item: AggregatedDeliveryClient }) {
+  return (
+    <View style={styles.itemCard}>
+      <View style={styles.itemHeader}>
+        <Text style={styles.itemCode}>{item.cliente_nombre}</Text>
+        <View style={styles.tag}>
+          <Text style={styles.tagText}>{item.cliente_id}</Text>
+        </View>
+      </View>
+      <Text style={styles.itemDesc}>JSON separado para este cliente al exportar</Text>
+      <StatsRow units={item.total_units} weight={item.total_weight} />
+    </View>
+  );
+}
+
+function StatsRow({ units, weight }: { units: number; weight: number }) {
+  return (
+    <View style={styles.itemStats}>
+      <View style={styles.statPill}>
+        <Text style={styles.statLabel}>Rollos</Text>
+        <Text style={styles.statValue}>{units}</Text>
+      </View>
+      <View style={[styles.statPill, styles.statPillHighlight]}>
+        <Text style={styles.statLabel}>Kg</Text>
+        <Text style={styles.statValueBig}>{weight.toFixed(2)}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -221,7 +244,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: '#1E293B',
     margin: 16,
-    borderRadius: 16,
+    borderRadius: 12,
     padding: 20,
     borderWidth: 1,
     borderColor: '#334155',
@@ -238,9 +261,8 @@ const styles = StyleSheet.create({
   totalLabel: {
     color: '#94A3B8',
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 1,
     marginBottom: 6,
   },
   totalValue: {
@@ -258,55 +280,69 @@ const styles = StyleSheet.create({
   sessionLabel: {
     color: '#64748B',
     fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.5,
+    fontWeight: '700',
   },
   articleCount: {
-    color: '#8B5CF6',
+    color: '#818CF8',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  warningBox: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#B45309',
+    backgroundColor: '#451A03',
+    padding: 12,
+  },
+  warningText: {
+    color: '#FCD34D',
+    fontSize: 13,
+    fontWeight: '700',
   },
   listContent: {
     paddingHorizontal: 16,
     paddingBottom: 16,
   },
-  articleCard: {
+  itemCard: {
     backgroundColor: '#1E293B',
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 16,
     marginBottom: 10,
     borderWidth: 1,
     borderColor: '#334155',
   },
-  articleHeader: {
+  itemHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 4,
+    gap: 12,
   },
-  articleCode: {
+  itemCode: {
     color: '#E2E8F0',
     fontSize: 16,
-    fontWeight: '700',
-    fontFamily: Platform.OS === 'web' ? 'monospace' : 'Courier',
+    fontWeight: '800',
+    flex: 1,
   },
-  colorTag: {
+  tag: {
     backgroundColor: '#334155',
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
-  colorTagText: {
+  tagText: {
     color: '#CBD5E1',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  articleDesc: {
+  itemDesc: {
     color: '#94A3B8',
     fontSize: 13,
     marginBottom: 12,
   },
-  articleStats: {
+  itemStats: {
     flexDirection: 'row',
     gap: 10,
   },
@@ -319,22 +355,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statPillHighlight: {
-    backgroundColor: '#1a1a2e',
     borderWidth: 1,
     borderColor: '#3B82F6',
   },
   statLabel: {
     color: '#64748B',
     fontSize: 10,
-    fontWeight: '600',
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
     marginBottom: 2,
   },
   statValue: {
     color: '#F8FAFC',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   statValueBig: {
     color: '#3B82F6',
@@ -348,15 +382,10 @@ const styles = StyleSheet.create({
     borderTopColor: '#1E293B',
   },
   finalizeButton: {
-    backgroundColor: '#22C55E',
-    borderRadius: 14,
+    backgroundColor: '#16A34A',
+    borderRadius: 12,
     paddingVertical: 16,
     alignItems: 'center',
-    shadowColor: '#22C55E',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
   },
   buttonDisabled: {
     opacity: 0.6,
@@ -364,6 +393,6 @@ const styles = StyleSheet.create({
   finalizeButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 });
