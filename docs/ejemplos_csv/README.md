@@ -19,3 +19,6 @@ Ver la guía completa en [`../guia_prueba_apk.md`](../guia_prueba_apk.md).
 - Para **re-testear la entrega**, duplicar `preparado_ejemplo.csv` y cambiar
   `manifest_version` (ej. `2026-06-02-002`); la app desbloquea la planilla al
   detectar la versión nueva.
+- **Para escanear:** los `id_barra` de estos CSV son códigos EAN-13 reales. Abrir
+  `assets/generate_barcodes.html` en el navegador muestra todos los códigos
+  textiles listos para escanear con la cámara o imprimir (ver punto 4 de la guía).

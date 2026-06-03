@@ -30,13 +30,12 @@ es así:
 ## 2. Requisitos para probar
 
 - Celular **Android** con **internet** (datos o WiFi).
-- **Acceso a las 3 carpetas de Drive** (ver punto 4). El programador ya tiene
+- **Acceso a las 3 carpetas de Drive** (ver punto 5). El programador ya tiene
   acceso al Drive donde están.
 - La **APK** instalada (ver punto 3).
-- Algo para escanear: las **imágenes de códigos de barras de prueba** (en la
-  carpeta `assets/` del proyecto: `barcodes_prueba.png`, `barcodes_textiles_*.png`)
-  abiertas en otra pantalla/impresas. También se puede **cargar el código a mano**
-  o con un **lector USB/Bluetooth**.
+- Algo para escanear los códigos (ver detalle en el punto 4). Como mínimo,
+  alcanza con poder **cargar el código a mano** desde la app, pero lo ideal es
+  escanear con la cámara los códigos de barra de prueba.
 
 ---
 
@@ -55,7 +54,32 @@ es así:
 
 ---
 
-## 4. Carpetas de Google Drive
+## 4. Códigos de barra de prueba (qué escanear)
+
+Los `id_barra` de los CSV de ejemplo son **códigos de barra EAN-13 reales y
+escaneables**. Hay tres maneras de obtenerlos:
+
+1. **Generador HTML (recomendado, tiene los 25 códigos):**
+   abrir `assets/generate_barcodes.html` en cualquier navegador (PC o celular).
+   Muestra los 25 rollos textiles (000011–000257) como códigos de barra. Se pueden
+   **escanear directo de la pantalla** con la cámara de la app, o **imprimir** con
+   el botón "Imprimir Códigos". Todos los `id_barra` de los CSV de ejemplo salen
+   de acá.
+2. **Imágenes PNG ya listas (cobertura parcial):**
+   - `assets/barcodes_textiles_2_*.png` → códigos 000127 a 000219.
+   - `assets/barcodes_textiles_3_*.png` → códigos 000035, 000226, 000233, 000240, 000257.
+   - ⚠️ `assets/barcodes_prueba.png` es de **otra serie** (`77912345…`), **no**
+     corresponde a los CSV textiles; ignorarlo para esta prueba.
+3. **Carga manual / lector externo:** en la pantalla de escaneo se puede **escribir
+   o pegar** el `id_barra`, o usar un **lector USB/Bluetooth**. Útil si no se puede
+   escanear con cámara.
+
+> Sugerencia: tener abierto `generate_barcodes.html` en la pantalla de la
+> computadora y escanear desde ahí con el celular es la forma más rápida de probar.
+
+---
+
+## 5. Carpetas de Google Drive
 
 La app usa **3 carpetas**. Se abren con `https://drive.google.com/drive/folders/<ID>`:
 
@@ -78,7 +102,7 @@ La app usa **3 carpetas**. Se abren con `https://drive.google.com/drive/folders/
 
 ---
 
-## 5. Formato de los archivos de entrada (CSV)
+## 6. Formato de los archivos de entrada (CSV)
 
 Codificación recomendada: **UTF-8**. Separador: **coma (`,`)**. Primera fila =
 encabezados (en minúscula, con esos nombres exactos).
@@ -87,7 +111,7 @@ encabezados (en minúscula, con esos nombres exactos).
 > consistentes entre sí para subir directamente a Drive: `stock_ejemplo.csv` y
 > `preparado_ejemplo.csv` (ver su `README.md`).
 
-### 5.1. Stock maestro (carpeta "Stock maestro")
+### 6.1. Stock maestro (carpeta "Stock maestro")
 
 Encabezados obligatorios:
 
@@ -119,7 +143,7 @@ id_barra,cod_articulo,descripcion,peso_nominal,color
 | `peso_nominal` | Peso del rollo en kg (número, punto decimal). |
 | `color` | Color del rollo. |
 
-### 5.2. Preparado pendiente (carpeta "Preparado pendiente")
+### 6.2. Preparado pendiente (carpeta "Preparado pendiente")
 
 Encabezados obligatorios:
 
@@ -153,11 +177,11 @@ PREP-2026-05-26,2026-05-26-001,CLI-002,Cliente Sur,7790001000066,ALG-ROJ,Algodó
 
 ---
 
-## 6. Pasos de la prueba (camino recomendado)
+## 7. Pasos de la prueba (camino recomendado)
 
 ### Preparación previa
-1. Subir un **stock CSV** a la carpeta *Stock maestro* (punto 5.1).
-2. Subir un **preparado CSV** a la carpeta *Preparado pendiente* (punto 5.2).
+1. Subir un **stock CSV** a la carpeta *Stock maestro* (punto 6.1).
+2. Subir un **preparado CSV** a la carpeta *Preparado pendiente* (punto 6.2).
 3. Confirmar que ambos quedaron como `.csv` (no Sheets).
 
 ### Flujo A — Preparación
@@ -180,7 +204,7 @@ PREP-2026-05-26,2026-05-26-001,CLI-002,Cliente Sur,7790001000066,ALG-ROJ,Algodó
 
 ### Verificación
 - Mirar la carpeta **Salida JSON** en Drive: deben aparecer los archivos generados
-  (ver nombres y contenido en el punto 7).
+  (ver nombres y contenido en el punto 8).
 
 > **Prueba sin Drive (opcional, rápida):** la app trae datos de prueba embebidos.
 > Con **"Reiniciar stock de prueba"** y **"Cargar preparado de prueba"** se puede
@@ -188,12 +212,12 @@ PREP-2026-05-26,2026-05-26-001,CLI-002,Cliente Sur,7790001000066,ALG-ROJ,Algodó
 
 ---
 
-## 7. Formato de los archivos de salida (JSON)
+## 8. Formato de los archivos de salida (JSON)
 
 La app deja los JSON en la carpeta **Salida JSON**. Este es el insumo que más
 adelante consumirá el puente hacia VB6.
 
-### 7.1. Preparación
+### 8.1. Preparación
 Nombre: `preparation_<fecha>_<operario>_<hora>_<idsesion8>.json`
 
 ```json
@@ -224,7 +248,7 @@ Nombre: `preparation_<fecha>_<operario>_<hora>_<idsesion8>.json`
 }
 ```
 
-### 7.2. Entrega (un archivo por cliente)
+### 8.2. Entrega (un archivo por cliente)
 Nombre: `delivery_<fecha>_<operario>_<cliente_id>_<load_id>_<idsesion8>.json`
 
 ```json
@@ -264,7 +288,7 @@ entregados (ej. escaneos no planificados). En una entrega limpia va vacío (`[]`
 
 ---
 
-## 8. Qué reportar tras la prueba
+## 9. Qué reportar tras la prueba
 
 Para cada flujo (Preparación y Entrega), anotar:
 
@@ -277,19 +301,19 @@ Para cada flujo (Preparación y Entrega), anotar:
 
 ---
 
-## 9. Problemas frecuentes
+## 10. Problemas frecuentes
 
 | Síntoma | Causa probable | Solución |
 |---------|----------------|----------|
-| "No se encontró archivo CSV" al actualizar | El archivo se subió como Google Sheets, no como CSV | Resubir como `.csv` real (ver punto 4) |
+| "No se encontró archivo CSV" al actualizar | El archivo se subió como Google Sheets, no como CSV | Resubir como `.csv` real (ver punto 5) |
 | Descarga trae datos viejos | Hay un CSV más nuevo que el esperado | Recordá: la app toma el **más reciente** de la carpeta |
-| "Preparado ya utilizado" / no deja entregar | Esa planilla ya se entregó | Subir CSV con `manifest_version` distinto (punto 5.2) |
-| Falta columna X | Encabezado mal escrito | Respetar nombres exactos del punto 5 |
+| "Preparado ya utilizado" / no deja entregar | Esa planilla ya se entregó | Subir CSV con `manifest_version` distinto (punto 6.2) |
+| Falta columna X | Encabezado mal escrito | Respetar nombres exactos del punto 6 |
 | No sube el JSON a Drive | Sin internet en el momento del envío | La app guarda local y reintenta; verificar conexión |
 
 ---
 
-## 10. Nota sobre la integración con VB6 (etapa siguiente, NO en esta prueba)
+## 11. Nota sobre la integración con VB6 (etapa siguiente, NO en esta prueba)
 
 Esta prueba valida la app y el ida/vuelta con Drive **por internet**. La conexión
 con VB6 es un paso posterior y separado: un puente local (con Google Drive para
