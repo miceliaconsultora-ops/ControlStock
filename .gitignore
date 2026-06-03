@@ -39,3 +39,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# demo bundle (generado localmente para enviar al programador)
+ControlStock_Demo.zip
