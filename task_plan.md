@@ -21,8 +21,8 @@
 - [x] Build UI screens and Services.
 - [/] **Phase T: Trigger & Test**
     - [x] Create `assets/master_data.csv` for standalone testing.
-    - [ ] Configure `eas.json` for APK builds.
-    - [ ] Generate Android APK.
+    - [x] Configure `eas.json` for APK builds.
+    - [x] Generate Android APK.
 
 ## PASOS A COMPLETAR.
 - [x] Modificar el csv con datos textiles.
@@ -32,7 +32,8 @@
 - [x] Agrupar por cod_articulo y color.
 - [x] Revisar la descarga y el payload.
 - [x] Configurar eas.json para APK builds.
-- [ ] Generar el apk y probar en el celular.
+- [x] Generar el apk (build EAS perfil `preview`, APK descargable).
+- [ ] Probar el apk en el celular (a cargo del programador de VB6).
 
 ## V2 - Preparacion + Entrega
 
@@ -45,7 +46,7 @@
 - [x] Generar JSON de preparacion.
 - [x] Generar JSON de entrega por cliente.
 - [x] Conectar sync real de preparado pendiente con Google Apps Script.
-- [ ] Configurar `DELIVERY_FOLDER_ID` real en Apps Script.
+- [x] Configurar `DELIVERY_FOLDER_ID` real en Apps Script (ya seteado en `Codigo_Google_Script.js`).
 - [x] Remover instancia previa del flujo de entrega.
 - [x] Registrar entrega factica y agrupar automaticamente por cliente.
 - [x] Agregar `load_id` por carga efectiva.
@@ -53,7 +54,9 @@
 - [x] Banner "Cliente completo - Enviar" + envio individual del JSON por cliente.
 - [x] Buffer de enviados (`export_outbox`) para no reenviar al finalizar.
 - [x] Auto-cierre de la carga cuando todo el plan esta entregado y subido.
-- [ ] Probar APK en dispositivo fisico.
+- [x] Generar APK (EAS `preview`) y documentar la prueba: `docs/guia_prueba_apk.md`
+      + plantillas CSV de ejemplo en `docs/ejemplos_csv/`.
+- [ ] Probar APK en dispositivo fisico (a cargo del programador de VB6, segun la guia).
 - [ ] **Integración con VB6 (Local Bridge)**
     - [ ] Configurar Google Drive para Ordenadores (Desktop) en equipo de prueba.
     - [ ] Crear Script Puente Local (Python/Node.js) para monitorear carpeta local y procesar JSON.

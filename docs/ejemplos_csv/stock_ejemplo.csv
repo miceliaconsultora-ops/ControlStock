@@ -1,0 +1,13 @@
+id_barra,cod_articulo,descripcion,peso_nominal,color
+7790001000011,ALG-BLA,Algodón,12.5,Blanco
+7790001000028,ALG-BLA,Algodón,11.8,Blanco
+7790001000035,ALG-BLA,Algodón,13.2,Blanco
+7790001000042,ALG-NEG,Algodón,10.0,Negro
+7790001000059,ALG-NEG,Algodón,12.0,Negro
+7790001000066,ALG-ROJ,Algodón,14.5,Rojo
+7790001000073,ALG-ROJ,Algodón,13.8,Rojo
+7790001000080,ALG-AZU,Algodón,11.0,Azul
+7790001000097,POL-BLA,Poliéster,8.5,Blanco
+7790001000103,POL-BLA,Poliéster,9.2,Blanco
+7790001000110,POL-BLA,Poliéster,8.0,Blanco
+7790001000127,POL-NEG,Poliéster,9.5,Negro
